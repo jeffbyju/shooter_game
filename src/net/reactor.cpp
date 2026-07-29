@@ -239,10 +239,32 @@ namespace {
 int uring_setup(unsigned entries, io_uring_params* p) {
     return int(::syscall(__NR_io_uring_setup, entries, p));
 }
-int uring_enter(int fd, unsigned to_submit, unsigned min_complete, unsigned flags) {
+int uring_enter(int fd, unsigned to_submit, unsigned min_complete, unsigned flags,
+                const void* arg = nullptr, std::size_t argsz = 0) {
     return int(::syscall(__NR_io_uring_enter, fd, to_submit, min_complete, flags,
-                         nullptr, 0));
+                         arg, argsz));
 }
+
+// min_complete is only honoured when GETEVENTS is set. Without it the kernel
+// submits and returns immediately however large min_complete is -- which is the
+// difference between an event loop that sleeps and one that spins a core.
+#ifndef IORING_ENTER_GETEVENTS
+#define IORING_ENTER_GETEVENTS (1u << 0)
+#endif
+// EXT_ARG (5.11+) is what gives the wait a timeout without burning an SQE on
+// IORING_OP_TIMEOUT. Without a timeout the wait is unbounded, and the periodic
+// work the loop owes its caller never runs.
+#ifndef IORING_ENTER_EXT_ARG
+#define IORING_ENTER_EXT_ARG (1u << 3)
+#endif
+
+struct getevents_arg {
+    std::uint64_t sigmask;
+    std::uint32_t sigmask_sz;
+    std::uint32_t pad;
+    std::uint64_t ts;
+};
+struct kernel_ts { std::int64_t tv_sec; std::int64_t tv_nsec; };
 
 // The rings are written by one side and read by the other, so the indices need
 // real acquire/release ordering -- exactly the same reasoning as the SPSC ring
@@ -298,10 +320,22 @@ core::Status Reactor::open_uring() {
     interest_.assign(kMaxTrackedFd, 0);
     tokens_.assign(kMaxTrackedFd, 0);
 
+    // add() dispatches on use_uring_, so it has to be true before the wakeup fd
+    // is registered: on this path mux_ is never opened, and the epoll branch
+    // would call epoll_ctl(-1, ...) and fail with EBADF. Cleared again on the
+    // error paths below so an Auto fallback to epoll sees a consistent object.
+    use_uring_ = true;
+
     wake_read_ = Fd(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
-    if (!wake_read_.valid()) return core::fail("eventfd", std::strerror(errno));
-    if (!add(wake_read_.get(), kWakeToken, kRead))
-        return core::fail("register wakeup", std::strerror(errno));
+    if (!wake_read_.valid()) {
+        use_uring_ = false;
+        return core::fail("eventfd", std::strerror(errno));
+    }
+    if (!add(wake_read_.get(), kWakeToken, kRead)) {
+        use_uring_ = false;
+        // Not a syscall failure, so errno would be stale and misleading here.
+        return core::fail("register wakeup", "io_uring submission queue full");
+    }
     return core::ok();
 }
 
@@ -322,7 +356,14 @@ bool Reactor::submit_poll(int fd, std::uint64_t token, std::uint8_t interest) no
     if (interest & kRead)  events |= POLLIN;
     if (interest & kWrite) events |= POLLOUT;
     sqe->poll32_events = events;
-    sqe->user_data     = token;
+    // user_data carries the *fd*, not the caller's token. The caller's token is
+    // already in tokens_[fd], so this direction is the one that needs to be
+    // cheap: a completion must map back to an fd to re-arm single-shot poll.
+    (void)token;
+    // Two-step cast on purpose: user_data is __u64 (unsigned long long) while
+    // uint64_t is unsigned long here, and GCC's -Wsign-conversion fires on the
+    // direct assignment. Widening from unsigned keeps it silent and exact.
+    sqe->user_data     = static_cast<unsigned long long>(static_cast<unsigned>(fd));
 
     ring_.sq_array[idx] = idx;
     store_release(ring_.sq_tail, tail + 1);
@@ -341,7 +382,16 @@ int Reactor::poll_uring(Event* out, int max_events, int timeout_ms) noexcept {
     // epoll: interest changes and the wait are not separate transitions.
     const unsigned min_complete = timeout_ms == 0 ? 0u : 1u;
     if (pending_submits_ > 0 || min_complete > 0) {
-        const int rc = uring_enter(ring_fd_.get(), pending_submits_, min_complete, 0);
+        int rc;
+        if (min_complete > 0) {
+            kernel_ts ts{ timeout_ms / 1000, std::int64_t(timeout_ms % 1000) * 1000000 };
+            getevents_arg a{};
+            a.ts = reinterpret_cast<std::uint64_t>(&ts);
+            rc = uring_enter(ring_fd_.get(), pending_submits_, min_complete,
+                             IORING_ENTER_GETEVENTS | IORING_ENTER_EXT_ARG, &a, sizeof a);
+        } else {
+            rc = uring_enter(ring_fd_.get(), pending_submits_, 0, 0);
+        }
         if (rc < 0 && errno != EINTR && errno != EAGAIN && errno != ETIME) return -1;
         pending_submits_ = 0;
     }
@@ -352,9 +402,11 @@ int Reactor::poll_uring(Event* out, int max_events, int timeout_ms) noexcept {
     auto* cqes = static_cast<io_uring_cqe*>(ring_.cqes);
     while (head != tail && n < max_events) {
         const io_uring_cqe& cqe = cqes[head & *ring_.cq_mask];
+        const std::uint64_t ud = cqe.user_data;
+        const int fd = (ud < interest_.size()) ? int(ud) : -1;
         Event& e = out[n];
         e = {};
-        e.token = cqe.user_data;
+        e.token = (fd >= 0) ? tokens_[std::size_t(fd)] : ud;
         if (cqe.res >= 0) {
             const unsigned mask = unsigned(cqe.res);
             e.readable = (mask & POLLIN)  != 0;
@@ -368,20 +420,16 @@ int Reactor::poll_uring(Event* out, int max_events, int timeout_ms) noexcept {
             std::uint64_t drain;
             while (::read(wake_read_.get(), &drain, sizeof drain) > 0) {}
         }
+        // Single-shot poll is consumed by firing, so an fd that reported has to
+        // be registered again. This used to be a linear scan over all 65,536
+        // tracked slots per completion, looking the token back up to find its
+        // fd -- more work than the syscall io_uring exists to remove.
+        // Multishot (IORING_POLL_ADD_MULTI, 5.13+) would drop the re-arm itself.
+        if (fd >= 0) rearm(fd);
         ++head;
         ++n;
     }
     store_release(ring_.cq_head, head);
-
-    // Single-shot poll is consumed by firing, so every fd that reported must be
-    // registered again. Multishot (IORING_POLL_ADD_MULTI, kernel 5.13+) would
-    // avoid this; it is the obvious next step once this path is validated.
-    for (int i = 0; i < n; ++i) {
-        const std::uint64_t tok = out[i].token;
-        for (std::size_t fd = 0; fd < interest_.size(); ++fd) {
-            if (tokens_[fd] == tok && interest_[fd] != kNone) { rearm(int(fd)); break; }
-        }
-    }
     return n;
 }
 
