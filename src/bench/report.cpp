@@ -50,9 +50,9 @@ RunEnvironment probe_environment() {
     e.host_arch = "unknown";
 #endif
 #if defined(GE_OS_MACOS)
-    e.os = "macOS (kqueue)";
+    e.os = "macOS";
 #else
-    e.os = "Linux (epoll)";
+    e.os = "Linux";
 #endif
     char buf[64];
     // Compiler identification has to be compiler-agnostic, which sounds obvious
@@ -452,13 +452,24 @@ bool write_json(const std::string& path, const RunEnvironment& env, const LoadCo
     const double msgs = double(load.pings_sent + load.moves_sent + load.pongs_received + load.deltas_received);
 
     std::fprintf(f, "{\n");
-    std::fprintf(f, "  \"environment\": {\"arch\":\"%s\",\"os\":\"%s\",\"compiler\":\"%s\","
-                    "\"build\":\"%s\",\"logical_cores\":%u,\"performance_cores\":%u,"
-                    "\"clock_overhead_ns\":%lld,\"clock_granularity_ns\":%lld,\"threads_pinned\":%s},\n",
-                 env.host_arch.c_str(), env.os.c_str(), env.compiler.c_str(), env.build_type.c_str(),
+    // The backend is a runtime choice (--io=poll|uring|auto), so it cannot live in
+    // env.os, which is fixed at compile time: that stamped every Linux artifact
+    // "epoll" whatever actually ran, leaving two runs of different backends
+    // indistinguishable except by a filename someone typed by hand.
+    std::fprintf(f, "  \"environment\": {\"arch\":\"%s\",\"os\":\"%s\",\"io_backend\":\"%s\","
+                    "\"compiler\":\"%s\",\"build\":\"%s\",\"logical_cores\":%u,"
+                    "\"performance_cores\":%u,\"clock_overhead_ns\":%lld,"
+                    "\"clock_granularity_ns\":%lld,\"threads_pinned\":%s,"
+                    "\"reuseport\":%s,\"placement\":\"%s\"},\n",
+                 env.host_arch.c_str(), env.os.c_str(),
+                 srv.io_backend.empty() ? "unknown" : srv.io_backend.c_str(),
+                 env.compiler.c_str(), env.build_type.c_str(),
                  env.logical_cores, env.performance_cores,
-                 static_cast<long long>(env.clock_overhead_ns), static_cast<long long>(env.clock_granularity_ns),
-                 env.threads_pinned ? "true" : "false");
+                 static_cast<long long>(env.clock_overhead_ns),
+                 static_cast<long long>(env.clock_granularity_ns),
+                 env.threads_pinned ? "true" : "false",
+                 srv.used_reuseport ? "true" : "false",
+                 srv.placement.c_str());
     std::fprintf(f, "  \"config\": {\"clients\":%u,\"client_threads\":%u,\"ping_rate_hz\":%.1f,"
                     "\"move_rate_hz\":%.1f,\"duration_s\":%.1f,\"warmup_s\":%.1f,"
                     "\"poisson\":%s,\"seed\":%llu},\n",

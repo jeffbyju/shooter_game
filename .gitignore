@@ -16,3 +16,5 @@ perf.data*
 # do not belong in history.
 docs/results/dist-*.csv
 docs/
+# local interview prep, not part of the project
+geneva-trading/
