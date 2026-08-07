@@ -173,6 +173,8 @@ private:
             case MsgType::Disconnect:    return len >= sizeof(Disconnect);
             case MsgType::HealthProbe:   return len >= sizeof(HealthProbe);
             case MsgType::HealthReply:   return len >= sizeof(HealthReply);
+            case MsgType::ShooterInput:  return len >= sizeof(ShooterInput);
+            case MsgType::ShooterDelta:  return len >= sizeof(ShooterDeltaHeader);
             case MsgType::Invalid:
             case MsgType::Count:         break;
         }
@@ -209,6 +211,8 @@ void visit(const FrameView& f, H&& h) {
         case MsgType::Disconnect:    call(static_cast<Disconnect*>(nullptr));       break;
         case MsgType::HealthProbe:   call(static_cast<HealthProbe*>(nullptr));      break;
         case MsgType::HealthReply:   call(static_cast<HealthReply*>(nullptr));      break;
+        case MsgType::ShooterInput:  call(static_cast<ShooterInput*>(nullptr));     break;
+        case MsgType::ShooterDelta:  call(static_cast<ShooterDeltaHeader*>(nullptr)); break;
         case MsgType::Invalid:
         case MsgType::Count:         break;
     }
@@ -312,6 +316,51 @@ private:
     bool                 ok_      = false;
 };
 
+// A ShooterDelta's tail is two flat arrays back to back: `count` PlayerRecords
+// then `pickup_count` PickupRecords. Each array has a constant stride, but the
+// tail as a whole does not, which is why ShooterDeltaHeader is marked nested
+// and tail<T>() refuses to form one span over it. The split happens here,
+// once, instead of at every call site getting the offset arithmetic right.
+//
+// Same two-bound rule tail<T>() uses, for the same reason: the physical
+// payload length is the only bound that keeps a span inside our own memory,
+// and the counts the sender declared may shrink a view but can never extend
+// it. A header claiming 60000 players yields the records that actually fit,
+// not a read past the buffer.
+class ShooterDeltaView {
+public:
+    explicit ShooterDeltaView(const FrameView& f) noexcept
+        : header_(f.as<ShooterDeltaHeader>()) {
+        if (!header_) return;
+        const auto rest = f.tail_bytes(sizeof(ShooterDeltaHeader));
+        if (rest.empty()) return;
+
+        const std::size_t np = std::min(rest.size() / sizeof(PlayerRecord),
+                                        std::size_t(header_->count));
+        players_ = {reinterpret_cast<const PlayerRecord*>(rest.data()), np};
+
+        // The pickup array starts where the player array ended, so its offset
+        // depends on the *clamped* count rather than the declared one. Using
+        // the declared count here would reintroduce exactly the overrun the
+        // clamp above prevents.
+        const std::size_t used = np * sizeof(PlayerRecord);
+        const std::size_t nk = std::min((rest.size() - used) / sizeof(PickupRecord),
+                                        std::size_t(header_->pickup_count));
+        if (nk)
+            pickups_ = {reinterpret_cast<const PickupRecord*>(rest.data() + used), nk};
+    }
+
+    bool valid() const noexcept { return header_ != nullptr; }
+    const ShooterDeltaHeader&     header()  const noexcept { return *header_; }
+    std::span<const PlayerRecord> players() const noexcept { return players_; }
+    std::span<const PickupRecord> pickups() const noexcept { return pickups_; }
+
+private:
+    const ShooterDeltaHeader*     header_ = nullptr;
+    std::span<const PlayerRecord> players_;
+    std::span<const PickupRecord> pickups_;
+};
+
 // ------------------------------------------------------------------ encoding
 // Encoding writes straight into destination memory the caller already owns --
 // a socket send buffer or a shard-to-I/O ring slot. There is no intermediate
@@ -330,6 +379,77 @@ std::size_t encode(std::span<std::byte> out, const T& body,
                         std::to_underlying(MsgTraits<T>::type), flags, session, seq};
     std::memcpy(out.data(), &h, sizeof h);
     std::memcpy(out.data() + sizeof h, &body, sizeof(T));
+    return total;
+}
+
+// Encode a variable-length message whose tail is a FLAT array of fixed-size
+// elements.
+//
+// Unlike SnakeDeltaWriter this needs no incremental builder: a flat tail has a
+// constant stride, so the element count is known before anything is written and
+// header plus tail go down in one pass. The receiver reads it back with
+// FrameView::tail<E>(), which is exactly the case tail<E>() exists for.
+template <typename H, typename E>
+std::size_t encode_flat(std::span<std::byte> out, const H& head,
+                        std::span<const E> tail, std::uint32_t session,
+                        std::uint32_t seq, std::uint8_t flags = 0) noexcept {
+    static_assert(MsgTraits<H>::variable, "encode_flat is for variable-length messages");
+    static_assert(!MsgTraits<H>::nested,  "nested tails need a dedicated writer");
+    static_assert(std::is_same_v<typename MsgTraits<H>::element, E>,
+                  "tail element type does not match the message's declared element");
+    const std::size_t payload = sizeof(H) + tail.size() * sizeof(E);
+    const std::size_t total   = sizeof(FrameHeader) + payload;
+    if (GE_UNLIKELY(out.size() < total || payload > kMaxPayload)) return 0;
+    GE_ASSERT(reinterpret_cast<std::uintptr_t>(out.data()) % kFrameAlign == 0);
+    GE_ASSERT(payload % kFrameAlign == 0);
+
+    const FrameHeader h{kMagic, std::uint16_t(payload),
+                        std::to_underlying(MsgTraits<H>::type), flags, session, seq};
+    std::memcpy(out.data(), &h, sizeof h);
+    std::memcpy(out.data() + sizeof h, &head, sizeof(H));
+    if (!tail.empty())
+        std::memcpy(out.data() + sizeof h + sizeof(H), tail.data(),
+                    tail.size() * sizeof(E));
+    return total;
+}
+
+// Encode a message whose tail is TWO flat arrays back to back -- the shape a
+// ShooterDelta took on once it had to carry powerups as well as players.
+//
+// This is not the nested case SnakeDeltaWriter handles. There, record sizes
+// vary and the tail can only be built incrementally. Here both strides are
+// constant and both counts are known before anything is written, so the frame
+// still goes down in one pass; all that is needed is a second memcpy and a
+// header field saying where the boundary is. Keeping it a separate function
+// rather than generalising encode_flat means the single-array case keeps its
+// stricter static_asserts.
+template <typename H, typename E1, typename E2>
+std::size_t encode_flat2(std::span<std::byte> out, const H& head,
+                         std::span<const E1> a, std::span<const E2> b,
+                         std::uint32_t session, std::uint32_t seq,
+                         std::uint8_t flags = 0) noexcept {
+    static_assert(MsgTraits<H>::variable, "encode_flat2 is for variable-length messages");
+    static_assert(std::is_same_v<typename MsgTraits<H>::element, E1>,
+                  "first tail array does not match the message's declared element");
+    static_assert(std::is_trivially_copyable_v<E2>);
+    // Each array must be 8-aligned on its own. If the first were not, the
+    // second would start misaligned no matter how the frame was laid out.
+    static_assert(sizeof(E1) % kFrameAlign == 0, "first tail element breaks frame alignment");
+    static_assert(sizeof(E2) % kFrameAlign == 0, "second tail element breaks frame alignment");
+
+    const std::size_t payload = sizeof(H) + a.size() * sizeof(E1) + b.size() * sizeof(E2);
+    const std::size_t total   = sizeof(FrameHeader) + payload;
+    if (GE_UNLIKELY(out.size() < total || payload > kMaxPayload)) return 0;
+    GE_ASSERT(reinterpret_cast<std::uintptr_t>(out.data()) % kFrameAlign == 0);
+    GE_ASSERT(payload % kFrameAlign == 0);
+
+    const FrameHeader h{kMagic, std::uint16_t(payload),
+                        std::to_underlying(MsgTraits<H>::type), flags, session, seq};
+    std::byte* p = out.data();
+    std::memcpy(p, &h, sizeof h);                 p += sizeof h;
+    std::memcpy(p, &head, sizeof(H));             p += sizeof(H);
+    if (!a.empty()) { std::memcpy(p, a.data(), a.size() * sizeof(E1)); p += a.size() * sizeof(E1); }
+    if (!b.empty())   std::memcpy(p, b.data(), b.size() * sizeof(E2));
     return total;
 }
 

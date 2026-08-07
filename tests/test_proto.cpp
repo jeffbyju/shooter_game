@@ -352,3 +352,117 @@ GE_TEST(proto_encode_refuses_undersized_output) {
     std::byte small[8];
     CHECK_EQ(encode(small, Ping{1, 2}, 1, 1), 0u);
 }
+
+// ------------------------------------------------- arena delta: two tails
+// The ShooterDelta tail is `count` PlayerRecords followed by `pickup_count`
+// PickupRecords. Two flat arrays in one payload is the only place in this
+// protocol where a reader has to derive one offset from another, so it is the
+// only place an attacker-supplied count can move a pointer.
+
+GE_TEST(shooter_delta_tail_splits_players_from_pickups) {
+    PlayerRecord ps[3]{};
+    for (int i = 0; i < 3; ++i) {
+        ps[i].id   = std::uint32_t(i + 1);
+        ps[i].x    = float(i);
+        ps[i].health = 100;
+        ps[i].fuel = std::uint8_t(10 * i);
+        ps[i].ammo = std::uint8_t(i + 1);
+    }
+    PickupRecord ks[4]{};
+    for (int i = 0; i < 4; ++i) {
+        ks[i].id    = std::uint16_t(i);
+        ks[i].x     = float(i * 2);
+        ks[i].kind  = std::uint8_t(i % 2);
+        ks[i].flags = std::uint8_t(i == 2 ? 0 : kPickupActive);
+    }
+
+    ShooterDeltaHeader h{};
+    h.tick = 77; h.count = 3; h.pickup_count = 4;
+    const std::size_t n = encode_flat2<ShooterDeltaHeader, PlayerRecord, PickupRecord>(
+        g_buf, h, std::span<const PlayerRecord>(ps, 3),
+        std::span<const PickupRecord>(ks, 4), 5, 9);
+    CHECK_EQ(n, sizeof(FrameHeader) + sizeof(ShooterDeltaHeader)
+                + 3 * sizeof(PlayerRecord) + 4 * sizeof(PickupRecord));
+
+    FrameReader r({g_buf, n});
+    FrameView f;
+    CHECK(r.next(f) == ParseError::Ok);
+    const ShooterDeltaView d(f);
+    CHECK(d.valid());
+    CHECK_EQ(d.header().tick, 77u);
+    CHECK_EQ(d.players().size(), std::size_t(3));
+    CHECK_EQ(d.pickups().size(), std::size_t(4));
+    // The two bytes that replaced PlayerRecord::pad_ survive at the right
+    // offset. Reading them from the wrong one yields plausible small integers,
+    // which is exactly why this is checked by value and not by eye.
+    CHECK_EQ(d.players()[2].fuel, std::uint8_t(20));
+    CHECK_EQ(d.players()[2].ammo, std::uint8_t(3));
+    // And the pickup array starts after the LAST player rather than somewhere
+    // that happens to decode without crashing.
+    CHECK_EQ(d.pickups()[3].x, 6.0f);
+    CHECK((d.pickups()[2].flags & kPickupActive) == 0);
+    CHECK((d.pickups()[3].flags & kPickupActive) != 0);
+}
+
+GE_TEST(shooter_delta_view_clamps_counts_it_cannot_trust) {
+    PlayerRecord ps[2]{};
+    ps[0].id = 1; ps[1].id = 2;
+    PickupRecord k{};
+    k.id = 9; k.x = 123.0f; k.flags = kPickupActive;
+
+    // Physically two players and one pickup; the header claims ten players.
+    // The pickup's offset therefore has to come from the CLAMPED player count
+    // (2 -> 64 bytes) and not the declared one (10 -> 320 bytes), which would
+    // point well past the end of the frame.
+    ShooterDeltaHeader h{};
+    h.count = 10; h.pickup_count = 1;
+    const std::size_t n = encode_flat2<ShooterDeltaHeader, PlayerRecord, PickupRecord>(
+        g_buf, h, std::span<const PlayerRecord>(ps, 2),
+        std::span<const PickupRecord>(&k, 1), 1, 1);
+
+    FrameReader r({g_buf, n});
+    FrameView f;
+    CHECK(r.next(f) == ParseError::Ok);
+    const ShooterDeltaView d(f);
+    CHECK(d.valid());
+    CHECK_EQ(d.players().size(), std::size_t(2));   // clamped, not 10
+    CHECK_EQ(d.pickups().size(), std::size_t(1));
+    CHECK_EQ(d.pickups()[0].x, 123.0f);             // found where it really is
+}
+
+GE_TEST(shooter_delta_view_survives_a_header_only_payload) {
+    ShooterDeltaHeader h{};
+    h.tick = 5; h.count = 60000; h.pickup_count = 60000;
+    const std::size_t n = encode_flat2<ShooterDeltaHeader, PlayerRecord, PickupRecord>(
+        g_buf, h, std::span<const PlayerRecord>{}, std::span<const PickupRecord>{}, 1, 1);
+
+    FrameReader r({g_buf, n});
+    FrameView f;
+    CHECK(r.next(f) == ParseError::Ok);
+    const ShooterDeltaView d(f);
+    // A valid header with a wholly absent tail is not an error -- it is a tick
+    // on which nothing was visible. Both spans must simply be empty.
+    CHECK(d.valid());
+    CHECK_EQ(d.header().tick, 5u);
+    CHECK(d.players().empty());
+    CHECK(d.pickups().empty());
+}
+
+GE_TEST(a_worst_case_arena_delta_still_fits_one_frame) {
+    // kMaxFrameBytes is what every downstream buffer is sized from at startup.
+    // If the powerup array pushed the arena's worst case past it, the failure
+    // would be a shard that silently sheds every delta rather than a crash.
+    PlayerRecord ps[kMaxAoiPlayers]{};
+    PickupRecord ks[kMaxPickups]{};
+    alignas(8) std::byte big[kMaxFrameBytes];
+
+    ShooterDeltaHeader h{};
+    h.count = std::uint16_t(kMaxAoiPlayers);
+    h.pickup_count = std::uint16_t(kMaxPickups);
+    const std::size_t n = encode_flat2<ShooterDeltaHeader, PlayerRecord, PickupRecord>(
+        big, h, std::span<const PlayerRecord>(ps, kMaxAoiPlayers),
+        std::span<const PickupRecord>(ks, kMaxPickups), 1, 1);
+    CHECK(n > 0);                                   // zero means it did not fit
+    CHECK_EQ(n, kMaxArenaFrameBytes);
+    CHECK(n <= kMaxFrameBytes);
+}

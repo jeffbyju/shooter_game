@@ -42,6 +42,8 @@ enum class MsgType : std::uint8_t {
     Disconnect,         // either
     HealthProbe,        // gateway -> backend
     HealthReply,        // backend -> gateway
+    ShooterInput,       // C -> S  arena mode: movement, look angles and buttons
+    ShooterDelta,       // S -> C  arena mode: PlayerRecord[] then PickupRecord[]
     Count
 };
 
@@ -187,6 +189,112 @@ struct HealthReply {
     std::uint16_t shard_count;
 };
 
+// ------------------------------------------------------ arena (3D shooter)
+//
+// A second game mode on the same transport. Snake is 2D and its state message
+// is a nested variable-length structure because a snake is a polyline; an arena
+// player is a single point with two look angles, so the delta is a *flat* array
+// and the client reads it with a fixed stride instead of a bespoke walker.
+// Nothing else about the framing changes.
+
+// Bits in ShooterInput::buttons.
+enum ShooterButtons : std::uint32_t {
+    kBtnFire  = 1u << 0,
+    kBtnJump  = 1u << 1,
+    // Held while the jetpack is thrusting. The *gesture* that arms it -- a
+    // double tap of space, then hold -- is recognised on the client, because
+    // only the client has the key-event timestamps and only the client can
+    // react to the second tap without a round trip. What crosses the wire is a
+    // plain held bit, which the server gates on fuel. A client that simply
+    // asserts this bit forever therefore gains nothing: it burns the same fuel
+    // at the same rate and stops flying at the same moment.
+    kBtnJet   = 1u << 2,
+};
+
+// Look angles are sent as absolute radians rather than deltas. A dropped input
+// then costs one stale frame instead of permanently desynchronising the view,
+// which matters because this is UDP-shaped gameplay running over TCP: a stall
+// delivers a burst of inputs at once and relative aiming would integrate all of
+// them.
+struct ShooterInput {
+    std::uint64_t client_ts_ns;
+    std::uint32_t input_seq;
+    float         move_x;      // -1..1, strafe, relative to yaw
+    float         move_z;      // -1..1, forward, relative to yaw
+    float         yaw;         // radians, absolute
+    float         pitch;       // radians, absolute, clamped server-side
+    std::uint32_t buttons;     // ShooterButtons
+};
+
+// Bits in PlayerRecord::flags.
+enum PlayerFlags : std::uint16_t {
+    kPlayerSelf  = 1u << 0,   // exactly one per delta: the recipient's own player
+    kPlayerDead  = 1u << 1,
+    kPlayerFired = 1u << 2,   // fired this tick; the client draws a tracer along its view ray
+    kPlayerHit   = 1u << 3,   // took damage this tick
+    kPlayerJet   = 1u << 4,   // jetpack thrusting this tick; the client draws a plume
+    kPlayerPick  = 1u << 5,   // collected a powerup this tick
+};
+
+// 32 bytes, fixed size -- which is what makes the delta a flat array.
+struct PlayerRecord {
+    std::uint32_t id;
+    float         x, y, z;
+    float         yaw, pitch;
+    std::uint16_t health;
+    std::uint16_t score;
+    std::uint16_t flags;       // PlayerFlags
+    // Jetpack fuel and ammunition. Both fit in a byte -- fuel is a percentage
+    // and ammo is capped at world::kMaxAmmo -- so they occupy the two bytes
+    // that were already padding. A delta carrying jetpack and ammo state is
+    // not one byte larger than the delta that carried neither, which is the
+    // point of having fixed the record at 32 bytes in the first place.
+    std::uint8_t  fuel;        // 0..100, percent of world::kMaxFuel
+    std::uint8_t  ammo;        // 0..world::kMaxAmmo
+};
+
+// ---------------------------------------------------------------- powerups
+// What a pickup is on the wire. The server owns every one of them: a client
+// never claims a pickup, it is told that one went away and that its own fuel
+// or ammo went up. Collection is therefore not something a client can fake.
+enum class PickupKind : std::uint8_t {
+    Fuel = 0,       // refills the jetpack
+    Ammo = 1,       // refills the magazine
+};
+
+enum PickupFlags : std::uint8_t {
+    kPickupActive = 1u << 0,   // on the floor and collectable right now
+};
+
+// 16 bytes: a second flat array, same reasoning as PlayerRecord. Inactive
+// pickups are still sent, with kPickupActive clear, so that a client which
+// missed the delta that removed one is corrected by the very next delta
+// instead of drawing a ghost until the pickup respawns. Full state beats an
+// event over a lossy transport -- the same argument that made the delta a
+// snapshot rather than a diff.
+struct PickupRecord {
+    float         x, y, z;
+    std::uint16_t id;
+    std::uint8_t  kind;        // PickupKind
+    std::uint8_t  flags;       // PickupFlags
+};
+
+// The tail is TWO flat arrays back to back: `count` PlayerRecords, then
+// `pickup_count` PickupRecords. Each array has a constant stride but the tail
+// as a whole does not, so the message is marked nested below and tail<T>()
+// refuses to form a single span over it. Read it with proto::ShooterDeltaView,
+// which does the split once and bounds both arrays by the physical payload
+// length rather than by the counts the sender claimed.
+struct ShooterDeltaHeader {
+    std::uint64_t echo_client_ts_ns;
+    std::uint32_t tick;
+    std::uint32_t input_seq_ack;
+    std::uint16_t count;        // PlayerRecord structures following
+    std::uint16_t flags;
+    std::uint16_t pickup_count; // PickupRecord structures following those
+    std::uint16_t pad_;
+};
+
 // ------------------------------------------------------- traits & invariants
 template <typename T> struct MsgTraits;   // primary template intentionally undefined
 
@@ -219,6 +327,8 @@ GE_DEFINE_MSG_EX(SnakeDeltaHeader, SnakeDelta, true, true, SnakeRecord);
 GE_DEFINE_MSG(Disconnect,       Disconnect,    false, Void);
 GE_DEFINE_MSG(HealthProbe,      HealthProbe,   false, Void);
 GE_DEFINE_MSG(HealthReply,      HealthReply,   false, Void);
+GE_DEFINE_MSG(ShooterInput,     ShooterInput,  false, Void);
+GE_DEFINE_MSG_EX(ShooterDeltaHeader, ShooterDelta, true, true, PlayerRecord);
 #undef GE_DEFINE_MSG
 #undef GE_DEFINE_MSG_EX
 
@@ -228,6 +338,15 @@ static_assert(sizeof(SnakeDeltaHeader) == 24);
 static_assert(sizeof(MoveCommand) == 24);
 static_assert(sizeof(Ping) == 16 && sizeof(Pong) == 24);
 static_assert(sizeof(ServerWelcome) == 32);
+static_assert(sizeof(ShooterInput) == 32 && alignof(ShooterInput) <= 8);
+static_assert(sizeof(PlayerRecord) == 32 && alignof(PlayerRecord) == 4);
+static_assert(sizeof(PickupRecord) == 16 && alignof(PickupRecord) == 4);
+static_assert(sizeof(ShooterDeltaHeader) == 24);
+// Both tail elements must keep the payload 8-aligned on their own, or the
+// boundary between the two arrays -- and every frame after this one in a TCP
+// stream -- stops being aligned and the zero-copy cast stops being legal.
+static_assert(sizeof(PlayerRecord) % kFrameAlign == 0);
+static_assert(sizeof(PickupRecord) % kFrameAlign == 0);
 
 // Compile-time proof that every enumerator has exactly one payload type. Adding
 // a MsgType without a GE_DEFINE_MSG line is a build error, not a runtime
@@ -241,7 +360,8 @@ consteval bool msg_table_is_total() {
     return sizeof...(Ts) == std::size_t(MsgType::Count) - 1;   // no duplicates
 }
 static_assert(msg_table_is_total<ClientHello, ServerWelcome, Ping, Pong, MoveCommand,
-                                 SnakeDeltaHeader, Disconnect, HealthProbe, HealthReply>(),
+                                 SnakeDeltaHeader, Disconnect, HealthProbe, HealthReply,
+                                 ShooterInput, ShooterDeltaHeader>(),
               "MsgType enumerators and payload structs are out of sync");
 
 constexpr const char* msg_name(MsgType t) noexcept {
@@ -255,6 +375,8 @@ constexpr const char* msg_name(MsgType t) noexcept {
         case MsgType::Disconnect:    return "Disconnect";
         case MsgType::HealthProbe:   return "HealthProbe";
         case MsgType::HealthReply:   return "HealthReply";
+        case MsgType::ShooterInput:  return "ShooterInput";
+        case MsgType::ShooterDelta:  return "ShooterDelta";
         case MsgType::Invalid:
         case MsgType::Count:         break;
     }
@@ -267,11 +389,28 @@ constexpr const char* msg_name(MsgType t) noexcept {
 // startup.
 inline constexpr std::size_t kMaxSnakeSegments = 48;
 inline constexpr std::size_t kMaxAoiSnakes     = 24;
+inline constexpr std::size_t kMaxAoiPlayers    = 32;
+// Powerups in play at once. Every delta carries all of them -- 12 x 16 B =
+// 192 bytes, about 15% on top of a 32-player delta -- which buys the loss
+// tolerance described on PickupRecord. Sending only changes would be smaller
+// and would need an acknowledgement scheme to stay correct under loss, which
+// is the complexity this protocol was shaped to avoid.
+inline constexpr std::size_t kMaxPickups      = 12;
 
-inline constexpr std::size_t kMaxFrameBytes =
+inline constexpr std::size_t kMaxSnakeFrameBytes =
     sizeof(FrameHeader) + sizeof(SnakeDeltaHeader) +
     kMaxAoiSnakes * (sizeof(SnakeRecord) + kMaxSnakeSegments * sizeof(Point2));
+inline constexpr std::size_t kMaxArenaFrameBytes =
+    sizeof(FrameHeader) + sizeof(ShooterDeltaHeader) +
+    kMaxAoiPlayers * sizeof(PlayerRecord) +
+    kMaxPickups * sizeof(PickupRecord);
+
+// Downstream buffers are sized once at startup from this, so it has to bound
+// the worst case of *every* mode the server can be run in, not just the default.
+inline constexpr std::size_t kMaxFrameBytes =
+    kMaxSnakeFrameBytes > kMaxArenaFrameBytes ? kMaxSnakeFrameBytes
+                                              : kMaxArenaFrameBytes;
 static_assert(kMaxFrameBytes <= kMaxPayload,
-              "worst-case snake delta must fit one frame");
+              "worst-case delta must fit one frame");
 
 } // namespace ge::proto
