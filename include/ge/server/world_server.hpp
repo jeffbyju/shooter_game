@@ -64,6 +64,9 @@ struct ServerConfig {
     // (epoll/kqueue); Uring is implemented but unvalidated. See
     // docs/tutorial/14-production-hardening.md.
     net::Backend  io_backend      = net::Backend::Poll;
+    // Which simulation the shards run. Snake is the default so every existing
+    // caller, test and benchmark keeps its behaviour without being touched.
+    world::GameMode mode          = world::GameMode::Snake;
     float         world_size      = 1024.0f;
     float         cell_size       = 48.0f;
     float         aoi_radius      = 64.0f;

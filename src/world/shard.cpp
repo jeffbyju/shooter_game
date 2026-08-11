@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <span>
 
 #include "ge/core/thread.hpp"
 #include "ge/proto/codec.hpp"
@@ -14,11 +15,17 @@ namespace ge::world {
 void WorldShard::configure(const ShardConfig& cfg) {
     cfg_ = cfg;
 
+    if (cfg.mode == GameMode::Arena) arena_.reserve(cfg.max_entities);
     snakes_.reserve(cfg.max_entities);
     // The index holds every body point of every snake, so it is sized by
     // segments, not snakes.
     const std::size_t max_segments = cfg.max_entities * kMaxLength;
     grid_.configure(cfg.bounds, cfg.cell_size, max_segments);
+    // Cell size is the AOI radius, not cfg_.cell_size: that is what bounds a
+    // query to nine cells. Only built in arena mode -- configure() allocates,
+    // and a snake shard would pay for an index it never reads.
+    if (cfg.mode == GameMode::Arena)
+        arena_grid_.configure(cfg.bounds, cfg.aoi_radius, cfg.max_entities);
     seg_x_.reserve(max_segments);
     seg_y_.reserve(max_segments);
     seg_owner_.reserve(max_segments);
@@ -44,10 +51,19 @@ void WorldShard::configure(const ShardConfig& cfg) {
     wakers_.assign(cfg.io_threads, Waker{});
     dirty_io_.assign(cfg.io_threads, 0);
     rng_ = core::Xoshiro256ss(0x5A17u + cfg.shard_id);
+
+    // After the reseed, deliberately: seeding the powerup layout from the
+    // default-constructed rng_ would give every shard in the process an
+    // identical map, which is exactly the kind of thing that looks like
+    // working code and reads as a bug the first time two shards are compared.
+    if (cfg.mode == GameMode::Arena)
+        pickups_.init(std::uint16_t(proto::kMaxPickups),
+                      cfg.bounds.max_x - cfg.bounds.min_x, rng_);
 }
 
 std::size_t WorldShard::memory_bytes() const noexcept {
-    std::size_t total = snakes_.bytes() + grid_.bytes() + scratch_.capacity()
+    std::size_t total = snakes_.bytes() + grid_.bytes() + arena_grid_.bytes()
+                      + scratch_.capacity()
                       + conn_index_.capacity() * sizeof(std::uint32_t)
                       + (seg_x_.capacity() + seg_y_.capacity()) * sizeof(float)
                       + seg_owner_.capacity() * sizeof(std::uint32_t)
@@ -105,6 +121,8 @@ void WorldShard::apply_commands() {
                     }
                     break;
                 }
+                case ShardCommand::Kind::Input:
+                    break;   // arena input on a snake shard: ignore, don't crash
                 case ShardCommand::Kind::Move: {
                     const std::uint32_t idx = entity_for(c.io_thread, c.conn_id);
                     if (idx == kNoEntity) return;
@@ -400,14 +418,21 @@ void WorldShard::run(std::atomic<bool>& running) {
 
         scratch_.reset();                      // the only "deallocation" in the loop
 
-        apply_commands();
-        respawn_dead(tick);
-        advance(dt);
-        index_bodies();
-        resolve_collisions();
+        const bool arena = cfg_.mode == GameMode::Arena;
+        if (arena) {
+            apply_arena_commands();
+            advance_arena(dt, tick);
+        } else {
+            apply_commands();
+            respawn_dead(tick);
+            advance(dt);
+            index_bodies();
+            resolve_collisions();
+        }
         const std::int64_t t1 = core::Clock::now_ns();
 
-        build_deltas(std::uint32_t(tick));
+        if (arena) build_arena_deltas(std::uint32_t(tick));
+        else       build_deltas(std::uint32_t(tick));
         const std::int64_t t2 = core::Clock::now_ns();
 
         counters_.sim_ns   += std::uint64_t(t1 - t0);
@@ -426,6 +451,222 @@ void WorldShard::run(std::atomic<bool>& running) {
             counters_.ticks_skipped += behind;
         }
     }
+}
+
+// --------------------------------------------------------------- arena mode
+//
+// The snake path above and this one share everything structural -- the command
+// rings, the outbound byte ring, the tick scheduler, the per-tick arena
+// allocator, the counters -- and nothing per-entity.
+
+void WorldShard::arena_spawn(std::uint32_t idx) noexcept {
+    const float size = cfg_.bounds.max_x - cfg_.bounds.min_x;
+    // Inset from the wall so a fresh spawn is never clipped into the boundary.
+    const float margin = 4.0f;
+    const float span   = size - 2.0f * margin;
+    const float x = margin + float(rng_.next_double()) * span;
+    const float z = margin + float(rng_.next_double()) * span;
+    arena_.spawn(idx, x, z);
+}
+
+void WorldShard::apply_arena_commands() {
+    const std::int64_t now = core::Clock::now_ns();
+
+    for (std::uint16_t io = 0; io < cfg_.io_threads; ++io) {
+        inboxes_[io]->drain([&](const ShardCommand& c) {
+            ++counters_.commands;
+            if (c.enqueue_ns)
+                queue_transit_.record(std::uint64_t(std::max<std::int64_t>(0, now - std::int64_t(c.enqueue_ns))));
+
+            switch (c.kind) {
+                case ShardCommand::Kind::Join: {
+                    if (arena_.size() >= cfg_.max_entities) return;
+                    const auto idx = arena_.add(next_entity_id_++, 0, 0,
+                                                ClientLink{c.session, c.conn_id, c.io_thread, 0});
+                    arena_spawn(idx);
+                    bind_entity(c.io_thread, c.conn_id, idx);
+                    break;
+                }
+                case ShardCommand::Kind::Leave: {
+                    const std::uint32_t idx = entity_for(c.io_thread, c.conn_id);
+                    if (idx == kNoEntity) return;
+                    const std::uint32_t last = std::uint32_t(arena_.size() - 1);
+                    arena_.remove(idx);
+                    bind_entity(c.io_thread, c.conn_id, kNoEntity);
+                    // remove() swaps the last element into the hole, so whoever
+                    // was last now answers to a different index.
+                    if (last != idx && idx < arena_.size()) {
+                        const ClientLink& l = arena_.link(idx);
+                        bind_entity(l.io_thread, l.conn_id, idx);
+                    }
+                    break;
+                }
+                case ShardCommand::Kind::Input: {
+                    const std::uint32_t idx = entity_for(c.io_thread, c.conn_id);
+                    if (idx == kNoEntity) return;
+                    arena_.set_input(idx, c.dx, c.dy, c.yaw, c.pitch, c.buttons,
+                                     c.input_seq, c.client_ts_ns);
+                    break;
+                }
+                case ShardCommand::Kind::Move:
+                    break;   // snake input on an arena shard: ignore, don't crash
+            }
+        });
+    }
+}
+
+void WorldShard::advance_arena(float dt, std::uint64_t tick) noexcept {
+    const std::size_t n = arena_.size();
+    const float world = cfg_.bounds.max_x - cfg_.bounds.min_x;
+
+    // Flags describe what happened *this* tick and are rebuilt every tick, so a
+    // tracer is drawn once rather than until the shooter stops firing.
+    arena_.clear_tick_flags();
+
+    for (std::uint32_t i = 0; i < n; ++i)
+        if (arena_.due_respawn(i, tick)) arena_spawn(i);
+
+    arena_.step(dt, world);
+
+    // Hitscan after movement, so a shot is resolved against the positions the
+    // clients are about to be told about rather than the previous tick's.
+    for (std::uint32_t i = 0; i < n; ++i) {
+        if (!arena_.wants_fire(i)) continue;
+        arena_.consume_shot(i);
+        const HitResult h = arena_.hitscan(i);
+        if (!h.hit) continue;
+        if (arena_.damage(h.victim, kHitDamage, tick, std::uint64_t(cfg_.respawn_ticks)))
+            arena_.add_score(i);
+    }
+
+    // Powerups last, after movement, so walking onto one is collected on the
+    // tick you reach it rather than the tick after.
+    pickups_.update(tick, world, rng_);
+    arena_.collect_pickups(pickups_, tick,
+                           std::uint64_t(kPickupRespawnSec) * std::uint64_t(cfg_.tick_hz));
+
+    // Rebuilt from scratch rather than updated incrementally: every entity moves
+    // every tick, so an incremental update would touch nearly all of it anyway
+    // while also having to track cell transitions correctly.
+    arena_grid_.rebuild(arena_.xs(), arena_.zs(), arena_.size());
+}
+
+void WorldShard::build_arena_deltas(std::uint32_t tick) {
+    const std::size_t n = arena_.size();
+    const float r2 = cfg_.aoi_radius * cfg_.aoi_radius;
+
+    std::fill(dirty_io_.begin(), dirty_io_.end(), std::uint8_t{0});
+
+    for (std::uint32_t i = 0; i < n; ++i) {
+        const ClientLink& link = arena_.link(i);
+        if (link.session == 0) continue;
+
+        // This was a linear scan over every entity, defended by a comment
+        // arguing that the AOI test is so cheap a grid could not pay for
+        // itself. The test IS cheap -- a predictable branch over two contiguous
+        // float arrays, retiring ~3.5 instructions per cycle. There was simply
+        // an enormous amount of it: n^2 per tick, 251 M distance checks/s at
+        // 2048 players, and 13.4% of the process on one source line.
+        //
+        // Worse, it degenerates in exactly the configuration where AOI
+        // filtering is worth having. The loop exits once it has filled its
+        // record budget, so a crowded little map stops after ~32 iterations and
+        // looks fine; spread the same players over a large map and every one of
+        // them scans all n to emit one or two.
+        proto::PlayerRecord recs[proto::kMaxAoiPlayers];
+        std::uint16_t count = 0;
+
+        auto emit = [&](std::uint32_t o) {
+            proto::PlayerRecord& r = recs[count++];
+            r = {};
+            r.id     = arena_.id(o);
+            r.x      = arena_.x(o);
+            r.y      = arena_.y(o);
+            r.z      = arena_.z(o);
+            r.yaw    = arena_.yaw(o);
+            r.pitch  = arena_.pitch(o);
+            r.health = arena_.health(o);
+            r.score  = arena_.score(o);
+            r.fuel   = arena_.fuel_pct(o);
+            r.ammo   = std::uint8_t(arena_.ammo(o));
+            r.flags  = std::uint16_t(arena_.tick_flags(o) |
+                                     (o == i ? proto::kPlayerSelf : 0) |
+                                     (arena_.alive(o) ? 0 : proto::kPlayerDead));
+        };
+
+        emit(i);                                  // self first, always
+
+        // The grid is a filter, not a replacement: it narrows the candidates to
+        // the cells that could possibly contain a match, and the exact distance
+        // test still runs on each. Returning cell occupants directly would
+        // include the corners of the query box that lie outside the radius.
+        const float px = arena_.x(i), pz = arena_.z(i);
+        arena_grid_.query_aabb(px, pz, cfg_.aoi_radius,
+                               [&](std::span<const std::uint32_t> cell) {
+            counters_.aoi_candidates += cell.size();
+            for (const std::uint32_t o : cell) {
+                if (count >= proto::kMaxAoiPlayers) return;
+                if (o == i) continue;
+                const float dx = arena_.x(o) - px;
+                const float dz = arena_.z(o) - pz;
+                if (dx * dx + dz * dz > r2) continue;
+                emit(o);
+            }
+        });
+
+        // Every powerup, every tick, to every player -- see the note on
+        // proto::PickupRecord for why full state beats an event stream here.
+        proto::PickupRecord picks[proto::kMaxPickups];
+        const std::uint16_t np = pickups_.size();
+        for (std::uint16_t k = 0; k < np; ++k) {
+            proto::PickupRecord& r = picks[k];
+            r = {};
+            r.x     = pickups_.x(k);
+            r.y     = pickups_.y(k);
+            r.z     = pickups_.z(k);
+            r.id    = k;
+            r.kind  = pickups_.kind(k);
+            r.flags = std::uint8_t(pickups_.active(k) ? proto::kPickupActive : 0);
+        }
+
+        const std::uint32_t need = std::uint32_t(sizeof(OutRecord) +
+                                                 sizeof(proto::FrameHeader) +
+                                                 sizeof(proto::ShooterDeltaHeader) +
+                                                 count * sizeof(proto::PlayerRecord) +
+                                                 np * sizeof(proto::PickupRecord));
+        container::SpscByteRing& out = *outboxes_[link.io_thread];
+        std::byte* dst = out.begin_write(need);
+        if (GE_UNLIKELY(dst == nullptr)) {
+            // Same reasoning as the snake path: the next tick is strictly newer.
+            ++counters_.deltas_dropped;
+            continue;
+        }
+
+        proto::ShooterDeltaHeader hdr{};
+        hdr.echo_client_ts_ns = arena_.last_ts(i);
+        hdr.tick              = tick;
+        hdr.input_seq_ack     = arena_.last_seq(i);
+        hdr.count             = count;
+        hdr.pickup_count      = np;
+
+        const std::size_t frame_bytes = proto::encode_flat2<proto::ShooterDeltaHeader,
+                                                            proto::PlayerRecord,
+                                                            proto::PickupRecord>(
+            {dst + sizeof(OutRecord), need - sizeof(OutRecord)}, hdr,
+            std::span<const proto::PlayerRecord>(recs, count),
+            std::span<const proto::PickupRecord>(picks, np),
+            link.session, tick, std::to_underlying(proto::FrameFlags::ServerSent));
+        if (frame_bytes == 0) { ++counters_.deltas_dropped; continue; }
+
+        const OutRecord rec{link.conn_id, std::uint32_t(frame_bytes)};
+        std::memcpy(dst, &rec, sizeof rec);
+        out.commit_write(std::uint32_t(sizeof(OutRecord) + frame_bytes));
+        dirty_io_[link.io_thread] = 1;
+        ++counters_.deltas_built;
+    }
+
+    for (std::uint16_t io = 0; io < cfg_.io_threads; ++io)
+        if (dirty_io_[io]) wakers_[io]();
 }
 
 } // namespace ge::world

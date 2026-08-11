@@ -98,6 +98,7 @@ core::Status WorldServer::start(const ServerConfig& cfg) {
     for (std::uint16_t s = 0; s < cfg_.shards; ++s) {
         auto shard = std::make_unique<world::WorldShard>();
         world::ShardConfig sc;
+        sc.mode         = cfg_.mode;
         sc.shard_id     = s;
         sc.tick_hz      = cfg_.tick_hz;
         sc.bounds       = {0, 0, cfg_.world_size, cfg_.world_size};
@@ -457,6 +458,28 @@ void WorldServer::handle_frame(IoThread& t, net::Connection& c, const proto::Fra
             // A full command ring means the shard is behind. Dropping the input
             // is correct: the next one carries a newer intent, and blocking the
             // I/O thread here would convert one slow shard into a dead server.
+            if (!shards_[c.shard()]->inbox(t.index).try_push(cmd)) ++t.counters.cmd_ring_full;
+            break;
+        }
+
+        case proto::MsgType::ShooterInput: {
+            const auto* m = f.as<proto::ShooterInput>();
+            if (!m || !c.handshaked()) return;
+            world::ShardCommand cmd{};
+            cmd.kind         = world::ShardCommand::Kind::Input;
+            cmd.io_thread    = t.index;
+            cmd.conn_id      = c.id();
+            cmd.session      = c.session();
+            cmd.input_seq    = m->input_seq;
+            cmd.client_ts_ns = m->client_ts_ns;
+            cmd.enqueue_ns   = std::uint64_t(recv_ns);
+            cmd.dx           = m->move_x;
+            cmd.dy           = m->move_z;
+            cmd.yaw          = m->yaw;
+            cmd.pitch        = m->pitch;
+            cmd.buttons      = m->buttons;
+            // Same drop policy as MoveCommand, and for the same reason: inputs
+            // are absolute, so the next one supersedes this one entirely.
             if (!shards_[c.shard()]->inbox(t.index).try_push(cmd)) ++t.counters.cmd_ring_full;
             break;
         }

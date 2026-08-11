@@ -336,3 +336,365 @@ GE_TEST(shard_command_ring_rejects_rather_than_grows) {
     CHECK_EQ(accepted, 16);                    // exactly the configured bound
     CHECK(!s.inbox(0).try_push(cmd));
 }
+
+// ---------------------------------------------------------------- jetpack
+// These drive ArenaStore directly rather than through a shard. The shard adds
+// threads, rings and a tick scheduler, none of which the mechanics below
+// depend on; testing through it would make a failure here indistinguishable
+// from a failure in any of those.
+
+namespace {
+
+// One player standing at the origin of a 100-unit arena, full tank, full
+// magazine. Returned by value because ArenaStore is movable and the tests want
+// an independent world each.
+ArenaStore one_player() {
+    ArenaStore a;
+    a.reserve(4);
+    a.add(1, 50.0f, 50.0f, ClientLink{1, 0, 0, 0});
+    return a;
+}
+
+constexpr float kDt = 1.0f / 60.0f;
+
+} // namespace
+
+GE_TEST(jetpack_climbs_while_held_and_falls_when_the_tank_empties) {
+    ArenaStore a = one_player();
+    CHECK_EQ(a.fuel(0), kMaxFuel);
+
+    // Hold the thruster. The button is all the server sees; the double-tap
+    // gesture that produced it lives entirely in the client.
+    a.set_input(0, 0, 0, 0, 0, proto::kBtnJet, 1, 0);
+
+    float peak = 0.0f;
+    int   ticks_with_fuel = 0;
+    for (int i = 0; i < 60 * 6; ++i) {           // six seconds, twice the tank
+        a.step(kDt, 100.0f);
+        peak = std::max(peak, a.y(0));
+        if (a.fuel(0) > 0.0f) ++ticks_with_fuel;
+    }
+
+    // It left the ground...
+    CHECK(peak > 5.0f);
+    // ...the tank ran dry at roughly kMaxFuel / kJetFuelPerSec seconds...
+    const float expected_s = kMaxFuel / kJetFuelPerSec;
+    CHECK_NEAR(double(float(ticks_with_fuel) * kDt), double(expected_s), 0.1);
+    CHECK_EQ(a.fuel(0), 0.0f);
+    // ...and with no thrust left, gravity put it back on the floor rather
+    // than leaving it hovering.
+    CHECK_EQ(a.y(0), 0.0f);
+}
+
+GE_TEST(jetpack_respects_the_ceiling) {
+    ArenaStore a = one_player();
+    a.set_input(0, 0, 0, 0, 0, proto::kBtnJet, 1, 0);
+    for (int i = 0; i < 60 * 10; ++i) {
+        a.step(kDt, 100.0f);
+        // Never above the roof, not even for the tick that crosses it.
+        CHECK(a.y(0) <= kCeiling + 0.001f);
+    }
+}
+
+GE_TEST(jetpack_does_nothing_without_the_button) {
+    ArenaStore a = one_player();
+    a.set_input(0, 0, 0, 0, 0, 0, 1, 0);         // no buttons at all
+    for (int i = 0; i < 120; ++i) a.step(kDt, 100.0f);
+    CHECK_EQ(a.y(0), 0.0f);
+    CHECK_EQ(a.fuel(0), kMaxFuel);               // and burned nothing
+}
+
+GE_TEST(ground_trickle_refills_but_only_on_the_ground) {
+    ArenaStore a = one_player();
+    a.set_input(0, 0, 0, 0, 0, proto::kBtnJet, 1, 0);
+    for (int i = 0; i < 60; ++i) a.step(kDt, 100.0f);   // burn one second
+    const float after_burn = a.fuel(0);
+    CHECK(after_burn < kMaxFuel);
+
+    // Airborne with the thruster released: no regen, because the player is
+    // not grounded. Checked separately from the ground case because a regen
+    // that applied in the air would make the tank refill mid-flight.
+    a.set_input(0, 0, 0, 0, 0, 0, 2, 0);
+    a.step(kDt, 100.0f);
+    CHECK_EQ(a.fuel(0), after_burn);
+
+    // On the ground it creeps back up, at the documented rate.
+    for (int i = 0; i < 300; ++i) a.step(kDt, 100.0f);  // land, then five seconds
+    CHECK(a.fuel(0) > after_burn);
+    CHECK(a.fuel(0) < kMaxFuel);                        // and is nowhere near instant
+}
+
+// ------------------------------------------------------------------- ammo
+GE_TEST(a_magazine_holds_exactly_max_ammo_shots) {
+    ArenaStore a = one_player();
+    a.set_input(0, 0, 0, 0, 0, proto::kBtnFire, 1, 0);
+
+    int shots = 0;
+    // Long enough for every round at kFireCooldown, with room to spare, so a
+    // short count means the gun stopped rather than that time ran out.
+    for (int i = 0; i < 60 * 20; ++i) {
+        if (a.wants_fire(0)) { a.consume_shot(0); ++shots; }
+        a.step(kDt, 100.0f);
+    }
+    CHECK_EQ(shots, int(kMaxAmmo));
+    CHECK_EQ(a.ammo(0), std::uint16_t(0));
+    // An empty magazine must produce no shot at all -- no cooldown, no
+    // kPlayerFired, nothing for another client to draw a tracer from.
+    CHECK(!a.wants_fire(0));
+}
+
+GE_TEST(respawning_restores_fuel_and_ammo) {
+    ArenaStore a = one_player();
+    a.set_input(0, 0, 0, 0, 0, proto::kBtnFire | proto::kBtnJet, 1, 0);
+    for (int i = 0; i < 60 * 3; ++i) {
+        if (a.wants_fire(0)) a.consume_shot(0);
+        a.step(kDt, 100.0f);
+    }
+    CHECK(a.ammo(0) < kMaxAmmo);
+    CHECK(a.fuel(0) < kMaxFuel);
+
+    a.spawn(0, 10.0f, 10.0f);
+    CHECK_EQ(a.ammo(0), kMaxAmmo);
+    CHECK_EQ(a.fuel(0), kMaxFuel);
+}
+
+// --------------------------------------------------------------- powerups
+GE_TEST(powerup_is_collected_refills_and_respawns_somewhere_new) {
+    core::Xoshiro256ss rng(1234);
+    PickupField field;
+    field.init(proto::kMaxPickups, 100.0f, rng);
+    CHECK_EQ(field.size(), std::uint16_t(proto::kMaxPickups));
+
+    std::uint16_t slot = 0xffff;
+    for (std::uint16_t k = 0; k < field.size(); ++k)
+        if (field.kind(k) == std::uint8_t(proto::PickupKind::Fuel)) { slot = k; break; }
+    CHECK(slot != 0xffff);
+    const float ox = field.x(slot), oz = field.z(slot);
+
+    ArenaStore a = one_player();
+    a.spawn(0, ox, oz);                        // standing on the site, full tank
+
+    // A full player must not consume it. A can absorbed at 100 fuel is not
+    // merely wasted -- it is denied to whoever comes past next needing it.
+    a.collect_pickups(field, /*tick=*/100, /*respawn_ticks=*/60);
+    CHECK(field.active(slot));
+    CHECK_EQ(a.fuel(0), kMaxFuel);
+
+    // Burn fuel without moving: thrust for a second, release, fall back down.
+    a.set_input(0, 0, 0, 0, 0, proto::kBtnJet, 1, 0);
+    for (int i = 0; i < 60; ++i) a.step(kDt, 100.0f);
+    a.set_input(0, 0, 0, 0, 0, 0, 2, 0);
+    for (int i = 0; i < 180; ++i) a.step(kDt, 100.0f);
+    CHECK_EQ(a.x(0), ox);                      // no horizontal input, still on it
+    CHECK_EQ(a.z(0), oz);
+    CHECK_EQ(a.y(0), 0.0f);
+    const float before = a.fuel(0);
+    CHECK(before < kMaxFuel);
+
+    a.collect_pickups(field, /*tick=*/200, /*respawn_ticks=*/60);
+    CHECK(a.fuel(0) > before);
+    CHECK(!field.active(slot));                           // gone from the map
+    CHECK((a.tick_flags(0) & proto::kPlayerPick) != 0);   // and flagged on the wire
+
+    // Still gone one tick before its timer, back on the tick it expires...
+    field.update(259, 100.0f, rng);
+    CHECK(!field.active(slot));
+    field.update(260, 100.0f, rng);
+    CHECK(field.active(slot));
+    // ...somewhere else. Re-rolling the position is what stops the map
+    // collapsing into a set of memorised camping spots.
+    CHECK(field.x(slot) != ox || field.z(slot) != oz);
+}
+
+GE_TEST(powerup_field_is_half_fuel_half_ammo) {
+    core::Xoshiro256ss rng(7);
+    PickupField field;
+    field.init(proto::kMaxPickups, 100.0f, rng);
+    int fuel = 0, ammo = 0;
+    for (std::uint16_t k = 0; k < field.size(); ++k)
+        (field.kind(k) == std::uint8_t(proto::PickupKind::Fuel) ? fuel : ammo)++;
+    // Fixed per slot, not rolled per respawn: an independent coin flip per
+    // site produces runs where every powerup on the map is the same kind, and
+    // a player out of fuel then has nothing to walk toward.
+    CHECK_EQ(fuel, ammo);
+}
+
+// ---------------------------------------------------------------------------
+// Arena mode on the shard. Until these were written the whole arena path
+// through WorldShard -- join, tick, AOI, delta -- had no test at all: every
+// arena test drove `ge::world::Arena` directly, and the shard wrapper around
+// it was exercised only by running the server by hand. That is the half of the
+// code the spatial-grid port touched.
+// ---------------------------------------------------------------------------
+namespace {
+struct ArenaShardFixture {
+    WorldShard shard;
+    std::atomic<bool> running{true};
+    std::thread th;
+
+    explicit ArenaShardFixture(float aoi_radius) {
+        ShardConfig c;
+        c.mode           = GameMode::Arena;
+        c.shard_id       = 0;
+        c.tick_hz        = 200;
+        c.bounds         = {0, 0, 512, 512};
+        c.cell_size      = 32;
+        c.aoi_radius     = aoi_radius;
+        c.max_entities   = 64;
+        c.io_threads     = 1;
+        c.conns_per_io   = 64;
+        c.out_ring_bytes = 1u << 20;
+        shard.configure(c);
+        th = std::thread([this] { shard.run(running); });
+    }
+    ~ArenaShardFixture() {
+        running.store(false);
+        if (th.joinable()) th.join();
+    }
+};
+
+bool take_shooter_delta(WorldShard& shard, proto::FrameView& f, world::OutRecord& hdr,
+                        std::vector<std::byte>& keep) {
+    auto rec = shard.outbox(0).peek();
+    if (rec.empty()) return false;
+    std::memcpy(&hdr, rec.data(), sizeof hdr);
+    keep.assign(rec.begin() + sizeof hdr, rec.begin() + sizeof hdr + hdr.frame_bytes);
+    shard.outbox(0).pop();
+    proto::FrameReader reader(std::span<const std::byte>(keep.data(), keep.size()));
+    return reader.next(f) == proto::ParseError::Ok;
+}
+} // namespace
+
+GE_TEST(arena_shard_joins_simulates_and_emits_shooter_deltas) {
+    ArenaShardFixture fx(1024.0f);
+    CHECK(fx.shard.inbox(0).try_push(ShardFixture::join(11, 2)));
+
+    ShardCommand in{};
+    in.kind = ShardCommand::Kind::Input;
+    in.session = 11; in.conn_id = 2;
+    in.input_seq = 77; in.client_ts_ns = 0xBEEF;
+    in.dx = 0.0f; in.dy = 1.0f; in.yaw = 0.5f; in.pitch = 0.1f;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    CHECK(fx.shard.inbox(0).try_push(in));
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+
+    int deltas = 0;
+    bool saw_echo = false, saw_self = false, saw_pickups = false;
+    world::OutRecord hdr{};
+    std::vector<std::byte> keep;
+    proto::FrameView f;
+    for (int i = 0; i < 64 && take_shooter_delta(fx.shard, f, hdr, keep); ++i) {
+        CHECK_EQ(hdr.conn_id, 2u);
+        CHECK(f.type() == proto::MsgType::ShooterDelta);
+        CHECK_EQ(f.session(), 11u);
+
+        proto::ShooterDeltaView v(f);
+        if (v.header().echo_client_ts_ns == 0xBEEF) {
+            saw_echo = true;
+            CHECK_EQ(v.header().input_seq_ack, 77u);
+        }
+        for (const proto::PlayerRecord& r : v.players())
+            if (r.flags & proto::kPlayerSelf) saw_self = true;
+        if (!v.pickups().empty()) saw_pickups = true;
+        ++deltas;
+    }
+    CHECK(deltas > 0);
+    CHECK(saw_echo);
+    CHECK(saw_self);
+    CHECK(saw_pickups);                      // powerups ride along every tick
+    CHECK(fx.shard.counters().ticks > 0);
+    CHECK_EQ(fx.shard.live_entities(), 1u);
+}
+
+// The two ends of the AOI range, which is what a correctly wired spatial index
+// has to get right. A grid that never rebuilds returns nothing and fails the
+// first half; a grid whose query ignores the radius returns everything and
+// fails the second. Deliberately independent of where players spawn, because
+// arena_spawn() places them at random.
+GE_TEST(arena_shard_aoi_includes_everyone_when_the_radius_covers_the_map) {
+    constexpr std::uint32_t kPlayers = 8;
+    ArenaShardFixture fx(4096.0f);                 // radius >> map diagonal
+    for (std::uint32_t i = 0; i < kPlayers; ++i)
+        CHECK(fx.shard.inbox(0).try_push(ShardFixture::join(200 + i, i)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    CHECK_EQ(fx.shard.live_entities(), kPlayers);
+
+    world::OutRecord hdr{};
+    std::vector<std::byte> keep;
+    proto::FrameView f;
+    int checked = 0;
+    for (int i = 0; i < 256 && take_shooter_delta(fx.shard, f, hdr, keep); ++i) {
+        proto::ShooterDeltaView v(f);
+        if (v.players().size() != kPlayers) continue;   // skip the join ramp
+        // Each entity lives in exactly one grid cell and query_aabb walks each
+        // row segment once, so a player must never appear twice in one frame.
+        std::uint32_t seen[kPlayers]{};
+        std::uint16_t n = 0;
+        for (const proto::PlayerRecord& r : v.players()) {
+            for (std::uint16_t k = 0; k < n; ++k) CHECK(seen[k] != r.id);
+            seen[n++] = r.id;
+        }
+        ++checked;
+    }
+    CHECK(checked > 0);                 // we really did see full frames
+}
+
+GE_TEST(arena_shard_aoi_excludes_everyone_when_the_radius_is_tiny) {
+    constexpr std::uint32_t kPlayers = 8;
+    // 512x512 map, 8 players, radius 2: the chance any pair lands within two
+    // units of each other is small enough to be worth asserting on, and a
+    // failure here means the radius is not being applied at all.
+    ArenaShardFixture fx(2.0f);
+    for (std::uint32_t i = 0; i < kPlayers; ++i)
+        CHECK(fx.shard.inbox(0).try_push(ShardFixture::join(300 + i, i)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    CHECK_EQ(fx.shard.live_entities(), kPlayers);
+
+    world::OutRecord hdr{};
+    std::vector<std::byte> keep;
+    proto::FrameView f;
+    int frames = 0, self_only = 0;
+    for (int i = 0; i < 256 && take_shooter_delta(fx.shard, f, hdr, keep); ++i) {
+        proto::ShooterDeltaView v(f);
+        ++frames;
+        if (v.players().size() == 1) {
+            CHECK((v.players()[0].flags & proto::kPlayerSelf) != 0);
+            ++self_only;
+        }
+    }
+    CHECK(frames > 0);
+    // Not "every frame", because two players can legitimately spawn close
+    // together; "almost every frame" is the honest assertion.
+    CHECK(self_only * 4 > frames * 3);
+}
+
+// The test the other two cannot do. Because the grid is only a *filter* and the
+// exact distance check still runs behind it, a grid that ignores the query
+// radius produces byte-identical deltas -- it is a pure performance bug, and no
+// assertion on output can see it. This one asserts the narrowing itself, via
+// the candidate counter, and it is the only test in the suite that would fail
+// if the spatial index silently degraded back to a linear scan.
+GE_TEST(arena_shard_aoi_grid_examines_far_fewer_candidates_than_a_linear_scan) {
+    constexpr std::uint32_t kPlayers = 64;
+    ArenaShardFixture fx(2.0f);                  // 512x512 map: nearly nobody is near
+    for (std::uint32_t i = 0; i < kPlayers; ++i)
+        CHECK(fx.shard.inbox(0).try_push(ShardFixture::join(400 + i, i)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    CHECK_EQ(fx.shard.live_entities(), kPlayers);
+
+    // Sample a window *after* the join ramp, so the counts describe a shard at
+    // full occupancy rather than one that was filling up.
+    const std::uint64_t t0 = fx.shard.counters().ticks;
+    const std::uint64_t c0 = fx.shard.counters().aoi_candidates;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const std::uint64_t ticks = fx.shard.counters().ticks - t0;
+    const std::uint64_t cands = fx.shard.counters().aoi_candidates - c0;
+    CHECK(ticks > 0);
+
+    // A linear scan is kPlayers candidates per player per tick. The grid should
+    // be close to zero at this density; 8 leaves generous room for players who
+    // happen to spawn in the same cell, while still being 8x under the scan.
+    const double per_query = double(cands) / double(ticks * kPlayers);
+    CHECK(per_query < 8.0);
+}

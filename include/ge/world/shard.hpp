@@ -28,6 +28,7 @@
 #include "ge/metrics/histogram.hpp"
 #include "ge/proto/wire.hpp"
 #include "ge/world/snake.hpp"
+#include "ge/world/arena.hpp"
 #include "ge/world/grid.hpp"
 
 namespace ge::world {
@@ -36,7 +37,11 @@ namespace ge::world {
 // the shard can report queue transit time separately from simulation time --
 // without that split, "server latency" is one number you cannot act on.
 struct ShardCommand {
-    enum class Kind : std::uint8_t { Join = 0, Leave, Move };
+    // Input is the arena mode's equivalent of Move. It is a separate kind
+    // rather than extra fields on Move because the two carry different things:
+    // Move is a direction to turn towards, Input is an absolute camera
+    // orientation plus a button bitset.
+    enum class Kind : std::uint8_t { Join = 0, Leave, Move, Input };
 
     Kind          kind         = Kind::Move;
     std::uint8_t  pad_         = 0;
@@ -46,12 +51,19 @@ struct ShardCommand {
     std::uint32_t input_seq    = 0;
     std::uint64_t client_ts_ns = 0;
     std::uint64_t enqueue_ns   = 0;
-    float         dx           = 0;
-    float         dy           = 0;
+    float         dx           = 0;   // snake: heading vector x | arena: strafe
+    float         dy           = 0;   // snake: heading vector y | arena: forward
+    float         yaw          = 0;   // arena only, absolute radians
+    float         pitch        = 0;   // arena only, absolute radians
+    std::uint32_t buttons      = 0;   // arena only, proto::ShooterButtons
     std::uint32_t pad2_        = 0;
     std::uint32_t pad3_        = 0;
+    std::uint32_t pad4_        = 0;
 };
-static_assert(sizeof(ShardCommand) == 48);
+// 64 rather than 48: the arena input needs three more fields and a command is
+// copied through an SPSC ring, so a power-of-two size keeps a run of them from
+// straddling cache lines unevenly.
+static_assert(sizeof(ShardCommand) == 64);
 static_assert(std::is_trivially_copyable_v<ShardCommand>);
 
 // Prefix on every outbound ring record: tells the I/O thread which connection
@@ -70,7 +82,13 @@ struct Waker {
     void operator()() const noexcept { if (fn) fn(ctx); }
 };
 
+// Which simulation the shard runs. The transport, the framing, the rings, the
+// AOI grid and the tick scheduler are identical for both; only the per-tick
+// step and the shape of the state message differ.
+enum class GameMode : std::uint8_t { Snake = 0, Arena };
+
 struct ShardConfig {
+    GameMode      mode          = GameMode::Snake;
     std::uint16_t shard_id      = 0;
     int           tick_hz       = 60;
     Bounds        bounds        {0, 0, 1000, 1000};
@@ -114,7 +132,9 @@ public:
     const metrics::Histogram&     tick_jitter()   const noexcept { return tick_jitter_; }
     const metrics::Histogram&     tick_duration() const noexcept { return tick_duration_; }
     const metrics::Histogram&     queue_transit() const noexcept { return queue_transit_; }
-    std::size_t                   live_entities() const noexcept { return snakes_.size(); }
+    std::size_t                   live_entities() const noexcept {
+        return cfg_.mode == GameMode::Arena ? arena_.size() : snakes_.size();
+    }
     std::size_t                   memory_bytes()  const noexcept;
 
 private:
@@ -124,6 +144,14 @@ private:
     void resolve_collisions() noexcept;     // heads against bodies: who eats whom
     void respawn_dead(std::uint64_t tick);
     void build_deltas(std::uint32_t tick);
+
+    // Arena mode. Deliberately a parallel set of functions rather than branches
+    // inside the snake ones: the two simulations share no per-entity state, and
+    // interleaving them would put a mode test in every hot loop.
+    void apply_arena_commands();
+    void advance_arena(float dt, std::uint64_t tick) noexcept;
+    void build_arena_deltas(std::uint32_t tick);
+    void arena_spawn(std::uint32_t idx) noexcept;
     void spawn_at(std::uint32_t idx) noexcept;
     void wait_for(std::int64_t deadline_ns) noexcept;
 
@@ -138,7 +166,16 @@ private:
 
     ShardConfig  cfg_{};
     SnakeStore   snakes_;
+    ArenaStore   arena_;        // empty unless cfg_.mode == GameMode::Arena
+    PickupField  pickups_;      // likewise: powerups only exist in arena mode
     SpatialGrid  grid_;
+
+    // A second index, over arena entities rather than snake body points. The
+    // two cannot share: the snake grid's unit is a segment and its cell size is
+    // cfg_.cell_size, while this one's unit is a whole player and its cell is
+    // the AOI radius, which is the size that makes a query touch nine cells.
+    // Empty unless cfg_.mode == GameMode::Arena.
+    SpatialGrid  arena_grid_;
 
     // The spatial index is built over *body points*, not snakes: a snake is a
     // polyline and can span many cells, so the queryable unit has to be the

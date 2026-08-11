@@ -23,6 +23,7 @@ void on_signal(int) { g_stop.store(true, std::memory_order_release); }
 [[noreturn]] void usage(const char* a0) {
     std::printf(
 "usage: %s [options]\n"
+"  --mode snake|arena   simulation to run (default snake; arena is the 3D shooter)\n"
 "    --host H          bind address           (default 127.0.0.1)\n"
 "    --port P          bind port              (default 9000, 0 = ephemeral)\n"
 "    --io-threads N    I/O threads            (default 2)\n"
@@ -63,6 +64,12 @@ int main(int argc, char** argv) {
             if      (!std::strcmp(v, "poll"))  cfg.io_backend = ge::net::Backend::Poll;
             else if (!std::strcmp(v, "uring")) cfg.io_backend = ge::net::Backend::Uring;
             else if (!std::strcmp(v, "auto"))  cfg.io_backend = ge::net::Backend::Auto;
+            else usage(argv[0]);
+        }
+        else if (!std::strcmp(argv[i], "--mode")) {
+            const char* v = next();
+            if      (!std::strcmp(v, "snake")) cfg.mode = ge::world::GameMode::Snake;
+            else if (!std::strcmp(v, "arena")) cfg.mode = ge::world::GameMode::Arena;
             else usage(argv[0]);
         }
         else if (!std::strcmp(argv[i], "--busy-poll"))  cfg.busy_poll_shards = true;
