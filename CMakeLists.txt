@@ -57,6 +57,41 @@ target_link_libraries(ge_viewer PRIVATE ge_core)
 add_executable(ge_bench bench/bench_main.cpp)
 target_link_libraries(ge_bench PRIVATE ge_core)
 
+# ---------------------------------------------------- optional: SDL3 client
+#
+# SDL3 is the only third-party dependency in the project, and it is confined to
+# this one executable. If SDL3 is absent the target is skipped and everything
+# else -- server, gateway, loadgen, tests -- still builds, so no part of the
+# server gained a dependency by the shooter client existing.
+# The arena over UDP datagrams. Exists so the transport can be replaced by
+# AF_XDP or DPDK without touching the game: see apps/arena_udp/main.cpp.
+add_executable(ge_arena_udp apps/arena_udp/main.cpp)
+target_link_libraries(ge_arena_udp PRIVATE ge_core)
+
+# Headless arena clients: no SDL, no display, so this one always builds and is
+# what remote/CI runs use.
+add_executable(ge_shooter_bots apps/shooter_bots/main.cpp)
+target_include_directories(ge_shooter_bots PRIVATE apps/shooter_client)
+target_link_libraries(ge_shooter_bots PRIVATE ge_core)
+
+option(GE_BUILD_SHOOTER_CLIENT "Build the SDL3 + OpenGL arena client" ON)
+if(GE_BUILD_SHOOTER_CLIENT)
+  find_package(SDL3 QUIET CONFIG)
+  if(SDL3_FOUND AND APPLE)
+    add_executable(ge_shooter apps/shooter_client/main.cpp)
+    target_include_directories(ge_shooter PRIVATE apps/shooter_client)
+    target_link_libraries(ge_shooter PRIVATE ge_core SDL3::SDL3 "-framework OpenGL")
+    # macOS ships OpenGL 4.1 and marks the whole API deprecated; the client opts
+    # out of the warning rather than the API, since 4.1 core is all it needs.
+    target_compile_definitions(ge_shooter PRIVATE GL_SILENCE_DEPRECATION=1)
+    message(STATUS "ge_shooter: SDL3 found, client will be built")
+  elseif(SDL3_FOUND)
+    message(STATUS "ge_shooter: skipped (needs the macOS OpenGL framework)")
+  else()
+    message(STATUS "ge_shooter: skipped (SDL3 not found; brew install sdl3)")
+  endif()
+endif()
+
 # ---------------------------------------------------------------- tests
 enable_testing()
 add_executable(ge_tests
@@ -68,6 +103,7 @@ add_executable(ge_tests
   tests/test_balancer.cpp
   tests/test_world.cpp
   tests/test_server.cpp
+  tests/test_gl_math.cpp
 )
 target_link_libraries(ge_tests PRIVATE ge_core)
 add_test(NAME unit COMMAND ge_tests)
