@@ -440,6 +440,7 @@ void WorldShard::run(std::atomic<bool>& running) {
         counters_.arena_high_water = scratch_.high_water();
         tick_duration_.record(std::uint64_t(t2 - t0));
         ++counters_.ticks;
+        live_entities_ = cfg_.mode == GameMode::Arena ? arena_.size() : snakes_.size();
 
         // If a tick overran its budget, skip the ticks we missed instead of
         // trying to catch up: replaying stale simulation steps back-to-back

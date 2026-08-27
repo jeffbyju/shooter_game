@@ -132,8 +132,13 @@ public:
     const metrics::Histogram&     tick_jitter()   const noexcept { return tick_jitter_; }
     const metrics::Histogram&     tick_duration() const noexcept { return tick_duration_; }
     const metrics::Histogram&     queue_transit() const noexcept { return queue_transit_; }
+    // Reads a published mirror rather than the container's size directly.
+    // Calling arena_.size() from the reporting thread races with the shard
+    // thread adding an entity -- and unlike a counter, reading a vector's size
+    // while it is being resized is a race on state the container itself is
+    // part-way through updating. The shard republishes this once per tick.
     std::size_t                   live_entities() const noexcept {
-        return cfg_.mode == GameMode::Arena ? arena_.size() : snakes_.size();
+        return std::size_t(live_entities_.get());
     }
     std::size_t                   memory_bytes()  const noexcept;
 
@@ -176,6 +181,9 @@ private:
     // the AOI radius, which is the size that makes a query touch nine cells.
     // Empty unless cfg_.mode == GameMode::Arena.
     SpatialGrid  arena_grid_;
+
+    // Published once per tick by the shard thread; read by report().
+    metrics::Counter live_entities_ = 0;
 
     // The spatial index is built over *body points*, not snakes: a snake is a
     // polyline and can span many cells, so the queryable unit has to be the

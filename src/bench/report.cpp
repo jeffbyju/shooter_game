@@ -142,10 +142,10 @@ void print_throughput(const LoadReport& load, const server::ServerReport& srv, b
         std::printf("  io backend            %12s\n", srv.io_backend.c_str());
     if (have_server) {
         std::printf("  server frames handled %12s in    %s out\n",
-                    count(double(srv.io.frames_in)).c_str(), count(double(srv.io.frames_out)).c_str());
+                    count(double(std::uint64_t(srv.io.frames_in))).c_str(), count(double(std::uint64_t(srv.io.frames_out))).c_str());
         std::printf("  simulation            %12s ticks  %s entity-steps\n",
-                    count(double(srv.shard.ticks)).c_str(),
-                    count(double(srv.shard.entities_stepped)).c_str());
+                    count(double(std::uint64_t(srv.shard.ticks))).c_str(),
+                    count(double(std::uint64_t(srv.shard.entities_stepped))).c_str());
     } else {
         std::printf("  server-side counters       unavailable  (measuring an external process)\n");
     }
@@ -159,7 +159,7 @@ void print_client_observations(const LoadReport& load) {
     rule("CLIENT-SIDE OBSERVATIONS  (what the generator saw, no server access needed)");
     std::printf("  clients connected     %12" PRIu64 "\n", load.clients_connected);
     std::printf("  connections lost      %12" PRIu64 "   server closed or reset mid-run\n", load.disconnects);
-    std::printf("  parse errors          %12" PRIu64 "   malformed frame from the server\n", load.parse_errors);
+    std::printf("  parse errors          %12" PRIu64 "   malformed frame from the server\n", std::uint64_t(load.parse_errors));
     std::printf("  pings sent / answered %12" PRIu64 " / %" PRIu64 "   (%.3f%% answered)\n",
                 load.pings_sent, load.pongs_received,
                 load.pings_sent ? 100.0 * double(load.pongs_received) / double(load.pings_sent) : 0.0);
@@ -226,24 +226,24 @@ void print_cpu(const metrics::ResourceDelta& res, const LoadReport& load,
     std::printf("  messages per core-sec %12s\n",
                 count(res.cpu_ns > 0 ? msgs / (double(res.cpu_ns) / 1e9) : 0).c_str());
 
-    const std::uint64_t busy = srv.io.busy_ns, wait = srv.io.poll_wait_ns;
+    const std::uint64_t busy = std::uint64_t(srv.io.busy_ns), wait = std::uint64_t(srv.io.poll_wait_ns);
     if (busy + wait > 0)
         std::printf("  io threads busy       %11.2f%%       (%s working / %s blocked in poll)\n",
                     100.0 * double(busy) / double(busy + wait),
                     dur(busy).c_str(), dur(wait).c_str());
-    if (srv.io.spin_polls > 0)
+    if (std::uint64_t(srv.io.spin_polls) > 0)
         std::printf("  adaptive spin         %12" PRIu64 " zero-timeout polls of %" PRIu64
                     " (%.1f%%): trading CPU for wakeup latency\n",
-                    srv.io.spin_polls, srv.io.poll_calls,
-                    100.0 * double(srv.io.spin_polls) / double(srv.io.poll_calls));
-    if (srv.shard.ticks > 0) {
-        const double per_tick = double(srv.shard.sim_ns + srv.shard.build_ns) / double(srv.shard.ticks);
+                    std::uint64_t(srv.io.spin_polls), std::uint64_t(srv.io.poll_calls),
+                    100.0 * double(std::uint64_t(srv.io.spin_polls)) / double(std::uint64_t(srv.io.poll_calls)));
+    if (std::uint64_t(srv.shard.ticks) > 0) {
+        const double per_tick = double(std::uint64_t(srv.shard.sim_ns) + std::uint64_t(srv.shard.build_ns)) / double(std::uint64_t(srv.shard.ticks));
         std::printf("  shard tick budget     %11.2f%%       (%s of work in each tick)\n",
                     100.0 * per_tick / (1e9 / 60.0), dur(std::uint64_t(per_tick)).c_str());
         std::printf("    integrate + grid    %12s /tick\n",
-                    dur(srv.shard.sim_ns / srv.shard.ticks).c_str());
+                    dur(std::uint64_t(srv.shard.sim_ns) / std::uint64_t(srv.shard.ticks)).c_str());
         std::printf("    build deltas        %12s /tick\n",
-                    dur(srv.shard.build_ns / srv.shard.ticks).c_str());
+                    dur(std::uint64_t(srv.shard.build_ns) / std::uint64_t(srv.shard.ticks)).c_str());
     }
 #if defined(GE_OS_MACOS)
     std::printf("  context switches      %12" PRIu64 " (Darwin: blocking-syscall transitions,\n"
@@ -289,14 +289,14 @@ void print_hardware_counters(const metrics::PerfSample& s, std::uint64_t message
 
 void print_syscalls(const server::ServerReport& srv) {
     rule("SYSCALL EFFICIENCY  (batching quality)");
-    const double reads = double(srv.io.read_calls), writes = double(srv.io.write_calls);
-    std::printf("  frames per read()     %12.2f\n", safe_div(double(srv.io.frames_in), reads));
-    std::printf("  frames per write()    %12.2f\n", safe_div(double(srv.io.frames_out), writes));
-    std::printf("  bytes per read()      %12.1f\n", safe_div(double(srv.io.bytes_in), reads));
+    const double reads = double(std::uint64_t(srv.io.read_calls)), writes = double(std::uint64_t(srv.io.write_calls));
+    std::printf("  frames per read()     %12.2f\n", safe_div(double(std::uint64_t(srv.io.frames_in)), reads));
+    std::printf("  frames per write()    %12.2f\n", safe_div(double(std::uint64_t(srv.io.frames_out)), writes));
+    std::printf("  bytes per read()      %12.1f\n", safe_div(double(std::uint64_t(srv.io.bytes_in)), reads));
     std::printf("  events per poll()     %12.2f   (%" PRIu64 " polls, %" PRIu64 " empty wakeups)\n",
-                safe_div(double(srv.io.frames_in), double(srv.io.poll_calls)),
-                srv.io.poll_calls, srv.io.poll_empty);
-    std::printf("  writev batches        %12" PRIu64 "\n", srv.io.writev_calls);
+                safe_div(double(std::uint64_t(srv.io.frames_in)), double(std::uint64_t(srv.io.poll_calls))),
+                std::uint64_t(srv.io.poll_calls), std::uint64_t(srv.io.poll_empty));
+    std::printf("  writev batches        %12" PRIu64 "\n", std::uint64_t(srv.io.writev_calls));
     std::printf("  \033[2mnote                  an empty wakeup is a poll() that found no work; a high\n"
                 "                        ratio means the timeout is too short or something is\n"
                 "                        waking the loop without producing anything.\033[0m\n");
@@ -304,17 +304,17 @@ void print_syscalls(const server::ServerReport& srv) {
 
 void print_backpressure(const server::ServerReport& srv, const LoadReport& load) {
     rule("BACKPRESSURE AND LOSS  (every drop is counted, none are silent)");
-    std::printf("  command ring full     %12" PRIu64 "   inputs dropped before reaching a shard\n", srv.io.cmd_ring_full);
-    std::printf("  state deltas dropped  %12" PRIu64 "   shard could not enqueue (I/O thread behind)\n", srv.shard.deltas_dropped);
-    std::printf("  short writes          %12" PRIu64 "   kernel send buffer full; output queued\n", srv.io.short_writes);
-    std::printf("  slow clients evicted  %12" PRIu64 "   send queue overflowed its fixed budget\n", srv.io.evicted_slow);
-    std::printf("  parse errors          %12" PRIu64 "   malformed frames; connection torn down\n", srv.io.parse_errors);
-    std::printf("  ticks late            %12" PRIu64 "   tick began after its deadline\n", srv.shard.ticks_late);
-    std::printf("  ticks skipped         %12" PRIu64 "   dropped rather than replayed to catch up\n", srv.shard.ticks_skipped);
+    std::printf("  command ring full     %12" PRIu64 "   inputs dropped before reaching a shard\n", std::uint64_t(srv.io.cmd_ring_full));
+    std::printf("  state deltas dropped  %12" PRIu64 "   shard could not enqueue (I/O thread behind)\n", std::uint64_t(srv.shard.deltas_dropped));
+    std::printf("  short writes          %12" PRIu64 "   kernel send buffer full; output queued\n", std::uint64_t(srv.io.short_writes));
+    std::printf("  slow clients evicted  %12" PRIu64 "   send queue overflowed its fixed budget\n", std::uint64_t(srv.io.evicted_slow));
+    std::printf("  parse errors          %12" PRIu64 "   malformed frames; connection torn down\n", std::uint64_t(srv.io.parse_errors));
+    std::printf("  ticks late            %12" PRIu64 "   tick began after its deadline\n", std::uint64_t(srv.shard.ticks_late));
+    std::printf("  ticks skipped         %12" PRIu64 "   dropped rather than replayed to catch up\n", std::uint64_t(srv.shard.ticks_skipped));
     std::printf("  client disconnects    %12" PRIu64 "   observed by the load generator\n", load.disconnects);
-    std::printf("  client send blocked   %12" PRIu64 "   generator could not issue on schedule\n", load.parse_errors);
-    const double drop_rate = safe_div(double(srv.shard.deltas_dropped),
-                                      double(srv.shard.deltas_built + srv.shard.deltas_dropped)) * 100.0;
+    std::printf("  client send blocked   %12" PRIu64 "   generator could not issue on schedule\n", std::uint64_t(load.parse_errors));
+    const double drop_rate = safe_div(double(std::uint64_t(srv.shard.deltas_dropped)),
+                                      double(std::uint64_t(srv.shard.deltas_built) + std::uint64_t(srv.shard.deltas_dropped))) * 100.0;
     std::printf("  delta drop rate       %11.4f%%\n", drop_rate);
 }
 
@@ -510,12 +510,12 @@ bool write_json(const std::string& path, const RunEnvironment& env, const LoadCo
                     ",\"short_writes\":%" PRIu64 ",\"evicted_slow\":%" PRIu64
                     ",\"parse_errors\":%" PRIu64 ",\"ticks_late\":%" PRIu64
                     ",\"ticks_skipped\":%" PRIu64 "},\n",
-                 srv.io.cmd_ring_full, srv.shard.deltas_dropped, srv.io.short_writes,
-                 srv.io.evicted_slow, srv.io.parse_errors, srv.shard.ticks_late, srv.shard.ticks_skipped);
+                 std::uint64_t(srv.io.cmd_ring_full), std::uint64_t(srv.shard.deltas_dropped), std::uint64_t(srv.io.short_writes),
+                 std::uint64_t(srv.io.evicted_slow), std::uint64_t(srv.io.parse_errors), std::uint64_t(srv.shard.ticks_late), std::uint64_t(srv.shard.ticks_skipped));
     std::fprintf(f, "  \"syscalls\": {\"read_calls\":%" PRIu64 ",\"write_calls\":%" PRIu64
                     ",\"poll_calls\":%" PRIu64 ",\"frames_in\":%" PRIu64 ",\"frames_out\":%" PRIu64 "}\n",
-                 srv.io.read_calls, srv.io.write_calls, srv.io.poll_calls,
-                 srv.io.frames_in, srv.io.frames_out);
+                 std::uint64_t(srv.io.read_calls), std::uint64_t(srv.io.write_calls), std::uint64_t(srv.io.poll_calls),
+                 std::uint64_t(srv.io.frames_in), std::uint64_t(srv.io.frames_out));
     std::fprintf(f, "}\n");
     std::fclose(f);
     return true;

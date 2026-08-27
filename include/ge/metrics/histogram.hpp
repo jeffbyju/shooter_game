@@ -19,6 +19,7 @@
 
 #include "ge/core/assert.hpp"
 #include "ge/core/platform.hpp"
+#include "ge/metrics/counters.hpp"
 
 namespace ge::metrics {
 
@@ -89,7 +90,7 @@ public:
         return max_;
     }
 
-    std::uint64_t min()   const noexcept { return count_ ? min_ : 0; }
+    std::uint64_t min()   const noexcept { return count_.get() ? min_.get() : 0u; }
     std::uint64_t max()   const noexcept { return max_; }
     std::uint64_t count() const noexcept { return count_; }
     std::uint64_t total() const noexcept { return sum_; }
@@ -167,11 +168,17 @@ private:
     std::uint64_t highest_equivalent(std::uint64_t v) const noexcept { return v + bucket_width(v) - 1; }
     std::uint64_t median_equivalent(std::uint64_t v)  const noexcept { return v + bucket_width(v) / 2; }
 
-    std::vector<std::uint64_t> counts_;
-    std::uint64_t sum_   = 0;
-    std::uint64_t count_ = 0;
-    std::uint64_t min_   = UINT64_MAX;
-    std::uint64_t max_   = 0;
+    // Counter, not plain uint64: a histogram is recorded on the owning thread
+    // and merged from the reporting thread, which is the same cross-thread read
+    // the counters have -- and ThreadSanitizer flagged every bucket. Relaxed
+    // atomics on both sides, which on arm64 and x86-64 is the same instruction
+    // as a plain store; see counters.hpp for the assembly. The shape of the
+    // hot path is unchanged: one load, one add, one store per record().
+    std::vector<Counter> counts_;
+    Counter       sum_   = 0;
+    Counter       count_ = 0;
+    Counter       min_   = UINT64_MAX;
+    Counter       max_   = 0;
     std::uint64_t highest_ = 0;
     std::uint64_t sub_bucket_count_ = 0;
     std::uint64_t sub_bucket_half_  = 0;

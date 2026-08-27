@@ -1,13 +1,24 @@
 #pragma once
 // Hot-path counters.
 //
-// Each thread increments its own plain uint64 -- no atomic RMW, no contention,
-// one store per event. Aggregation happens only when a report is produced, and
-// reads use std::atomic_ref so the cross-thread read is well-defined rather
-// than a data race we agreed not to talk about. The cost of this design is that
-// a snapshot can miss an in-flight increment; at the rates these count, that is
-// a rounding error, and it is the right trade for keeping the measured path
-// identical to the unmeasured one.
+// Each thread increments its own counter -- no atomic RMW, no contention, one
+// store per event. Aggregation happens only when a report is produced. The cost
+// of this design is that a snapshot can miss an in-flight increment; at the
+// rates these count that is a rounding error, and it is the right trade for
+// keeping the measured path identical to the unmeasured one.
+//
+// These used to be plain uint64 written by the owning thread and read through
+// std::atomic_ref, with a comment claiming that made the cross-thread read
+// "well-defined rather than a data race we agreed not to talk about".
+//
+// That was wrong, and ThreadSanitizer said so on every counter in the struct.
+// A data race needs BOTH accesses to be atomic; one atomic load against one
+// plain store is still a race and still undefined. The practical hazard is not
+// tearing -- an aligned 64-bit store is atomic on every machine this targets --
+// it is that the compiler may legally keep a plain counter in a register across
+// a loop and write it back once at the end, leaving a reader staring at a
+// frozen value for as long as the loop runs. Which is exactly the situation a
+// per-second stats line is designed to detect.
 #include <atomic>
 #include <cstdint>
 
@@ -15,36 +26,62 @@
 
 namespace ge::metrics {
 
-// std::atomic_ref requires a non-const referent; the const_cast is safe because
-// we only ever load through it. This buys a well-defined cross-thread read of a
-// counter the owning thread updates with plain stores.
-GE_ALWAYS_INLINE std::uint64_t load_relaxed(const std::uint64_t& v) noexcept {
-    return std::atomic_ref<std::uint64_t>(const_cast<std::uint64_t&>(v))
-        .load(std::memory_order_relaxed);
-}
+// A counter written by exactly one owning thread and read by any other.
+//
+// Relaxed load + relaxed store, NOT fetch_add. That distinction is the whole
+// design: because a single thread owns the increment, the read-modify-write
+// does not need to be atomic, only the individual accesses do. Checked in the
+// assembly rather than assumed -- on arm64 at -O2:
+//
+//     plain ++x                     ldr / add / str
+//     relaxed load + relaxed store  ldr / add / str      <- identical
+//     fetch_add(relaxed)            ldadd                <- a real RMW
+//     fetch_add(seq_cst)            ldaddal              <- RMW plus barriers
+//
+// So defined behaviour here costs nothing, and the counter stays a plain store
+// on the hot path exactly as the original design intended.
+class Counter {
+public:
+    Counter() noexcept = default;
+    Counter(std::uint64_t v) noexcept : v_(v) {}
+    Counter(const Counter& o) noexcept : v_(o.get()) {}
+    Counter& operator=(const Counter& o) noexcept { set(o.get()); return *this; }
+    Counter& operator=(std::uint64_t v) noexcept  { set(v); return *this; }
+
+    operator std::uint64_t() const noexcept { return get(); }
+    std::uint64_t get() const noexcept { return v_.load(std::memory_order_relaxed); }
+    void set(std::uint64_t v) noexcept { v_.store(v, std::memory_order_relaxed); }
+
+    Counter&      operator++()    noexcept { set(get() + 1); return *this; }
+    std::uint64_t operator++(int) noexcept { const auto t = get(); set(t + 1); return t; }
+    Counter& operator+=(std::uint64_t n) noexcept { set(get() + n); return *this; }
+
+private:
+    std::atomic<std::uint64_t> v_{0};
+};
 
 // Per-I/O-thread counters. Syscall counts are tracked separately from message
 // counts because messages-per-syscall is the batching efficiency number, and
 // it is the first thing to check when throughput stops scaling.
 struct GE_CACHE_ALIGNED IoCounters {
-    std::uint64_t frames_in       = 0;
-    std::uint64_t frames_out      = 0;
-    std::uint64_t bytes_in        = 0;
-    std::uint64_t bytes_out       = 0;
-    std::uint64_t read_calls      = 0;
-    std::uint64_t write_calls     = 0;
-    std::uint64_t writev_calls    = 0;
-    std::uint64_t poll_calls      = 0;
-    std::uint64_t poll_empty      = 0;   // wakeups that found no work
-    std::uint64_t accepts         = 0;
-    std::uint64_t closes          = 0;
-    std::uint64_t parse_errors    = 0;
-    std::uint64_t short_writes    = 0;   // kernel buffer full: backpressure begins here
-    std::uint64_t evicted_slow    = 0;   // clients dropped for not draining
-    std::uint64_t cmd_ring_full   = 0;   // I/O -> shard backpressure
-    std::uint64_t busy_ns         = 0;   // CPU actually spent on work
-    std::uint64_t poll_wait_ns    = 0;   // blocked inside poll() with nothing to do
-    std::uint64_t spin_polls      = 0;   // zero-timeout polls issued while spinning
+    Counter      frames_in       = 0;
+    Counter      frames_out      = 0;
+    Counter      bytes_in        = 0;
+    Counter      bytes_out       = 0;
+    Counter      read_calls      = 0;
+    Counter      write_calls     = 0;
+    Counter      writev_calls    = 0;
+    Counter      poll_calls      = 0;
+    Counter      poll_empty      = 0;   // wakeups that found no work
+    Counter      accepts         = 0;
+    Counter      closes          = 0;
+    Counter      parse_errors    = 0;
+    Counter      short_writes    = 0;   // kernel buffer full: backpressure begins here
+    Counter      evicted_slow    = 0;   // clients dropped for not draining
+    Counter      cmd_ring_full   = 0;   // I/O -> shard backpressure
+    Counter      busy_ns         = 0;   // CPU actually spent on work
+    Counter      poll_wait_ns    = 0;   // blocked inside poll() with nothing to do
+    Counter      spin_polls      = 0;   // zero-timeout polls issued while spinning
 
     void add(const IoCounters& o) noexcept {
         frames_in += o.frames_in;   frames_out += o.frames_out;
@@ -59,41 +96,26 @@ struct GE_CACHE_ALIGNED IoCounters {
         cmd_ring_full += o.cmd_ring_full;
         busy_ns += o.busy_ns; poll_wait_ns += o.poll_wait_ns; spin_polls += o.spin_polls;
     }
-    // Snapshot another thread's counters without a data race.
-    IoCounters load() const noexcept {
-        IoCounters c;
-        c.frames_in = load_relaxed(frames_in);       c.frames_out = load_relaxed(frames_out);
-        c.bytes_in  = load_relaxed(bytes_in);        c.bytes_out  = load_relaxed(bytes_out);
-        c.read_calls = load_relaxed(read_calls);     c.write_calls = load_relaxed(write_calls);
-        c.writev_calls = load_relaxed(writev_calls);
-        c.poll_calls = load_relaxed(poll_calls);     c.poll_empty = load_relaxed(poll_empty);
-        c.accepts = load_relaxed(accepts);           c.closes = load_relaxed(closes);
-        c.parse_errors = load_relaxed(parse_errors);
-        c.short_writes = load_relaxed(short_writes);
-        c.evicted_slow = load_relaxed(evicted_slow);
-        c.cmd_ring_full = load_relaxed(cmd_ring_full);
-        c.busy_ns = load_relaxed(busy_ns);
-        c.poll_wait_ns = load_relaxed(poll_wait_ns);
-        c.spin_polls = load_relaxed(spin_polls);
-        return c;
-    }
+    // Snapshot another thread's counters. Every field reads itself atomically
+    // now, so this is just the copy constructor doing the right thing.
+    IoCounters load() const noexcept { return *this; }
 };
 
 // Per-shard (simulation thread) counters.
 struct GE_CACHE_ALIGNED ShardCounters {
-    std::uint64_t ticks           = 0;
-    std::uint64_t ticks_late      = 0;   // deadline already passed when the tick began
-    std::uint64_t ticks_skipped   = 0;   // fell so far behind that ticks were dropped
-    std::uint64_t commands        = 0;
-    std::uint64_t entities_stepped= 0;
-    std::uint64_t deltas_built    = 0;
-    std::uint64_t deltas_dropped  = 0;   // outbound ring full: shed load, do not block
-    std::uint64_t aoi_candidates  = 0;
-    std::uint64_t kills           = 0;
-    std::uint64_t deaths          = 0;
-    std::uint64_t sim_ns          = 0;
-    std::uint64_t build_ns        = 0;
-    std::uint64_t arena_high_water= 0;
+    Counter      ticks           = 0;
+    Counter      ticks_late      = 0;   // deadline already passed when the tick began
+    Counter      ticks_skipped   = 0;   // fell so far behind that ticks were dropped
+    Counter      commands        = 0;
+    Counter      entities_stepped= 0;
+    Counter      deltas_built    = 0;
+    Counter      deltas_dropped  = 0;   // outbound ring full: shed load, do not block
+    Counter      aoi_candidates  = 0;
+    Counter      kills           = 0;
+    Counter      deaths          = 0;
+    Counter      sim_ns          = 0;
+    Counter      build_ns        = 0;
+    Counter      arena_high_water= 0;
 
     void add(const ShardCounters& o) noexcept {
         ticks += o.ticks; ticks_late += o.ticks_late; ticks_skipped += o.ticks_skipped;
@@ -104,20 +126,7 @@ struct GE_CACHE_ALIGNED ShardCounters {
         sim_ns += o.sim_ns; build_ns += o.build_ns;
         if (o.arena_high_water > arena_high_water) arena_high_water = o.arena_high_water;
     }
-    ShardCounters load() const noexcept {
-        ShardCounters c;
-        c.ticks = load_relaxed(ticks); c.ticks_late = load_relaxed(ticks_late);
-        c.ticks_skipped = load_relaxed(ticks_skipped);
-        c.commands = load_relaxed(commands);
-        c.entities_stepped = load_relaxed(entities_stepped);
-        c.deltas_built = load_relaxed(deltas_built);
-        c.deltas_dropped = load_relaxed(deltas_dropped);
-        c.aoi_candidates = load_relaxed(aoi_candidates);
-        c.kills = load_relaxed(kills); c.deaths = load_relaxed(deaths);
-        c.sim_ns = load_relaxed(sim_ns); c.build_ns = load_relaxed(build_ns);
-        c.arena_high_water = load_relaxed(arena_high_water);
-        return c;
-    }
+    ShardCounters load() const noexcept { return *this; }
 };
 
 } // namespace ge::metrics

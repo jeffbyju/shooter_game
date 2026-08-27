@@ -42,7 +42,10 @@ struct WorldServer::IoThread {
     metrics::IoCounters counters{};
     metrics::Histogram  ping_service{10'000'000ULL, 3};
     metrics::Histogram  loop_work{1'000'000'000ULL, 3};
-    std::uint32_t       live = 0;
+    // Counter, not uint32: report() reads this from another thread, which is
+    // the same race the metrics counters had. Relaxed atomics, free on arm64
+    // and x86-64 -- see counters.hpp.
+    metrics::Counter    live = 0;
 
     bool alive(std::uint32_t idx) const noexcept {
         return idx < conns.size() && conns[idx].fd() >= 0;
@@ -494,7 +497,7 @@ void WorldServer::handle_frame(IoThread& t, net::Connection& c, const proto::Fra
                 const std::uint64_t pct = ring.capacity() ? (ring.used() * 100 / ring.capacity()) : 0;
                 worst_fill = std::max(worst_fill, pct);
             }
-            const proto::HealthReply rep{p->probe_ts_ns, t.live,
+            const proto::HealthReply rep{p->probe_ts_ns, std::uint32_t(t.live.get()),
                                          std::uint16_t(worst_fill), std::uint16_t(shards_.size())};
             const std::size_t n = proto::encode(buf, rep, c.session(), c.next_out_seq(),
                                                 std::uint8_t(proto::FrameFlags::ServerSent));
@@ -587,7 +590,7 @@ void WorldServer::close_connection(IoThread& t, net::Connection& c) {
     c.init(-1, idx, t.rbufs[idx], cfg_.read_buf_bytes, t.wbufs[idx], cfg_.write_buf_bytes);
     t.free_slots.push_back(idx);
     ++t.counters.closes;
-    if (t.live) --t.live;
+    if (t.live.get()) t.live = t.live.get() - 1;
 }
 
 // ------------------------------------------------------------------ reporting
