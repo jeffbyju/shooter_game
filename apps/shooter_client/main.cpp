@@ -1,14 +1,8 @@
-// ge_shooter -- an SDL3 + OpenGL client for the arena game mode.
+// ge_shooter -- SDL3 + OpenGL client for the arena mode.
 //
-// This is a real client in the same sense ge_viewer is: it speaks the wire
-// protocol in include/ge/proto/, has no privileged access to the simulation,
-// and renders only what the server's area-of-interest filter chose to send it.
-// What appears on screen is one player's view, decoded from the same structs
-// the server encoded.
-//
-// Rendering is OpenGL 4.1 core -- the newest profile macOS offers, and
-// deprecated there, hence GL_SILENCE_DEPRECATION. SDL3 supplies the window,
-// the GL context and the input.
+// No privileged access to the simulation: it decodes the same structs the
+// server encoded and draws only what AOI chose to send. GL 4.1 core is the
+// newest profile macOS offers, and deprecated there.
 #define GL_SILENCE_DEPRECATION 1
 
 #include <SDL3/SDL.h>
@@ -57,7 +51,7 @@ uniform mat4 u_model;
 // Normals do NOT transform by the model matrix. This used to be
 // mat3(u_model), which is correct only for rotation and uniform scale; the
 // general rule is the inverse transpose, computed on the CPU in
-// gl_math.hpp::normal_matrix(). See docs/foundations/08.
+// gl_math.hpp::normal_matrix().
 uniform mat3 u_normal;
 out vec3 v_normal;
 out vec3 v_world;
@@ -83,14 +77,10 @@ void main() {
         float line = 1.0 - min(min(g.x, g.y), 1.0);
         base = mix(base, vec3(0.30, 0.34, 0.40), line * 0.9);
     }
-    // One fixed light; this is a protocol demo, not a renderer.
-    // Two-sided: with culling off, a back face's normal points away from the
-    // light and would fall to ambient only, which renders players as faint
-    // half-visible shapes. Flipping it for back faces lights both sides.
-    //
-    // This is correct ONLY while the mesh winding agrees with GL_CCW. When it
-    // did not, this line fired on every visible fragment and inverted the
-    // lighting of the entire scene while still looking plausible.
+    // One fixed light. Two-sided because culling is off: a back face would
+    // otherwise fall to ambient and read as a ghost. Correct only while the
+    // winding agrees with GL_CCW -- when it did not, this inverted the whole
+    // scene's lighting and still looked plausible.
     vec3  n = normalize(v_normal);
     if (!gl_FrontFacing) n = -n;
     float d = max(dot(n, normalize(vec3(0.4, 1.0, 0.3))), 0.0);
@@ -161,16 +151,11 @@ GLuint link_program(const char* vs, const char* fs, const char* label) {
 struct Mesh { GLuint vao = 0, vbo = 0; GLsizei count = 0; };
 
 Mesh make_cube() {
-    // 36 vertices, position + normal. Written out rather than generated: it is
-    // the only mesh with per-face normals and a loop would be longer.
-    //
-    // Wound counter-clockwise as seen from OUTSIDE, so cross(p1-p0, p2-p0)
-    // agrees with the stored normal and GL's default GL_CCW calls these front
-    // faces. It was wound the other way for a long time, which was invisible
-    // with culling off but made gl_FrontFacing false on every visible face --
-    // so the shader's two-sided branch flipped every correct normal and the
-    // whole arena was lit from below. The floor measured 2.6x darker than it
-    // should have been. Winding is data, and three separate things read it.
+    // 36 vertices, position + normal, written out because a loop would be
+    // longer. Wound CCW from outside so cross(p1-p0,p2-p0) agrees with the
+    // stored normal. It was backwards for a long time: invisible with culling
+    // off, but gl_FrontFacing was false everywhere, so the two-sided branch
+    // flipped every normal and lit the arena from below -- floor 2.6x dark.
     const float v[] = {
         // -z
         -.5f,-.5f,-.5f, 0,0,-1,   .5f, .5f,-.5f, 0,0,-1,   .5f,-.5f,-.5f, 0,0,-1,
@@ -232,10 +217,8 @@ Mesh make_ui_quad() {
     return m;
 }
 
-// The server flags kPlayerFired for exactly one tick. At 60 Hz that is one
-// frame -- effectively invisible. The client therefore keeps its own short-
-// lived record so a shot reads as a streak rather than a blink. This is purely
-// presentational: no simulation state is inferred from it.
+// kPlayerFired lasts one tick, which at 60 Hz is one frame. The client keeps
+// its own short record so a shot reads as a streak. Presentational only.
 // 3x5 digits, row-major from the top, one bit per pixel. Used for the score
 // readout -- there is no font in this client and a text library for ten glyphs
 // would be a worse trade than fifty lines of bitmaps.
@@ -280,13 +263,9 @@ constexpr int kPickupJumpPct = 5;
 // the player as "the jetpack does not work" with nothing in a log.
 struct JetGesture {
     std::int64_t last_down_ns = 0;
-    // Tracked explicitly rather than inferred from last_down_ns == 0. Without
-    // it the very first press pairs with the zero-initialised timestamp and
-    // arms the jetpack on a single tap. That bug is invisible in the real
-    // client only because Clock::now_ns() is a large number on this machine,
-    // so `t - 0` exceeds the window by a wide margin -- it would reappear on
-    // any clock whose epoch is near zero. The selftest below found it
-    // immediately, which is the whole reason this struct exists.
+    // Explicit rather than inferred from last_down_ns == 0: otherwise the
+    // first press pairs with the zero timestamp and arms the jetpack on one
+    // tap. Hidden here only because now_ns() is large; the selftest found it.
     bool         have_down    = false;
     bool         armed        = false;
 
@@ -450,20 +429,10 @@ int main(int argc, char** argv) {
     std::int64_t last_frame_ns = Clock::now_ns();
 
     glEnable(GL_DEPTH_TEST);
-    // Culling stays off, and the reason has been wrong here twice. The first
-    // note blamed the floor quad's winding; the second blamed an inverted
-    // up-vector in view_from() and declared culling safe to re-enable. Both
-    // were real bugs and both are fixed, but the mesh winding was ALSO
-    // backwards -- see make_cube() -- so re-enabling culling at that point
-    // would have deleted every surface in the arena.
-    //
-    // With the winding corrected, culling is now genuinely safe. It is left
-    // off only because the floor is a single quad legitimately viewed from
-    // both sides, and a few dozen cubes make the saved overdraw unmeasurable.
-    //
-    // Lighting is two-sided instead (see gl_FrontFacing in the fragment
-    // shader), so a back face is lit correctly rather than falling to ambient
-    // and looking like a faint ghost of a player.
+    // Culling off. The reason here was wrong twice before -- the winding was
+    // also backwards, so enabling it then would have deleted every surface.
+    // Safe now, but the floor is one quad seen from both sides and a few dozen
+    // cubes make the saved overdraw unmeasurable. Lighting is two-sided.
     glDisable(GL_CULL_FACE);
 
     cl::WorldView view;
@@ -511,17 +480,10 @@ int main(int argc, char** argv) {
                     break;
                 case SDL_EVENT_MOUSE_MOTION:
                     if (mouse_captured) {
-                        // d(forward)/d(yaw) = (cos yaw, 0, -sin yaw) = -right,
-                        // exactly, at every yaw. So increasing yaw always swings
-                        // the camera LEFT, and a rightward mouse delta must
-                        // DECREASE yaw.
-                        //
-                        // This flipped when the coordinate frame was corrected:
-                        // under the old mirrored basis right was +x and
-                        // d(forward)/d(yaw) = +right, so `+=` was correct then.
-                        // Fixing the handedness reversed the requirement. The
-                        // selftest now asserts the relationship so it cannot
-                        // drift again.
+                        // d(forward)/d(yaw) = -right at every yaw, so a
+                        // rightward mouse delta must DECREASE yaw. This was
+                        // `+=` under the old mirrored basis; fixing the
+                        // handedness reversed it. The selftest asserts it.
                         yaw   -= e.motion.xrel * sens;
                         // SDL's yrel is positive downward, and pitch > 0 looks
                         // up (forward.y = sin pitch), so this subtraction is
@@ -631,14 +593,9 @@ int main(int argc, char** argv) {
             last_seen_tick = view.tick;
             for (const auto& p : view.players) {
                 if (p.flags & ge::proto::kPlayerSelf) {
-                    // kPlayerHit is set for one tick only, so the client holds
-                    // its own timer -- same reasoning as the tracers.
-                    // Two triggers, deliberately. kPlayerHit is set for one
-                    // tick only, so over UDP a single dropped delta loses the
-                    // event forever -- the flag is an edge, and edges do not
-                    // survive a lossy transport. Health is state, and state
-                    // does. Any decrease means damage happened, whether or not
-                    // the tick that announced it arrived.
+                    // Two triggers. kPlayerHit is an edge and one dropped
+                    // delta loses it forever; health is state, and a decrease
+                    // means damage whether or not that tick arrived.
                     const bool hit_flag = (p.flags & ge::proto::kPlayerHit) != 0;
                     const bool hp_drop  = have_last_health && p.health < last_health;
                     if (hit_flag || hp_drop) {
@@ -656,23 +613,11 @@ int main(int argc, char** argv) {
                     last_score = p.score;
                     have_last_score = true;
 
-                    // Fuel and ammo are STATE, so the same argument that made
-                    // the damage flash watch health rather than the one-tick
-                    // kPlayerHit edge applies: a powerup collected on a tick
-                    // whose delta was dropped still shows up as a value that
-                    // went up on the next one. kPlayerPick is carried on the
-                    // wire for anyone who wants the edge, but this does not
-                    // need it.
-                    //
-                    // The threshold is not cosmetic. Fuel also rises on its
-                    // own while standing still (kGroundRegenPerSec), so a
-                    // plain `fuel > last_fuel` lights the "collected" flash
-                    // every time the regen crosses a percentage point -- which
-                    // it did, roughly three times a second, until this was
-                    // caught by the bots reporting 88 fuel pickups in a run
-                    // where they can only have taken a handful. A powerup is
-                    // +55 points at once; regen is +0.05 per tick, and cannot
-                    // reach 5 even across a long run of dropped deltas.
+                    // Watches state, not the one-tick edge, so a pickup on a
+                    // dropped delta still shows. The threshold matters: fuel
+                    // also regenerates while standing, and a plain `>` lit the
+                    // flash ~3x a second -- the bots reported 88 pickups in a
+                    // run where only a handful were possible.
                     if (have_last_res && p.fuel >= last_fuel + kPickupJumpPct) {
                         fuel_pick_until_ns = Clock::now_ns() + 600'000'000;
                         ++pickups_taken;
@@ -795,18 +740,10 @@ int main(int argc, char** argv) {
             glDrawArrays(GL_TRIANGLES, 0, cube.count);
 
             // ---- the jetpack ------------------------------------------
-            // Worn by everyone, drawn whether or not it is firing. Before
-            // this, the only evidence a player had a jetpack was the exhaust
-            // while they used it, which made flight look like a property of
-            // the player rather than of a thing they are carrying -- and left
-            // the plume coming out of the middle of a torso with no hardware
-            // attached to it.
-            //
-            // Built in the player's own frame: forward is (sin yaw, cos yaw),
-            // the same convention the server's step() and the camera use, and
-            // right is (-cos yaw, sin yaw). Everything below is placed as
-            // `back` and `lateral` offsets from the body centre, so the pack
-            // stays on the player's back at any facing.
+            // Drawn whether or not it is firing: without it, flight looked
+            // like a property of the player and the plume came out of a torso.
+            // Placed as back/lateral offsets in the player's own frame, so it
+            // stays on their back at any facing.
             const float jrx = -std::cos(p.yaw), jrz = std::sin(p.yaw);
             const float back_x = -nx, back_z = -nz;
 

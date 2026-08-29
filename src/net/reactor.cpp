@@ -228,7 +228,7 @@ bool Reactor::wake() noexcept {
 // io_uring readiness backend.
 //
 // UNVALIDATED: written against the kernel ABI but never run on a machine with
-// io_uring. It is off by default for that reason. docs/tutorial/14 explains how
+// io_uring. It is off by default for that reason. see the reactor notes for how
 // to validate it, and scripts/cloud/ provisions a VM to do so.
 // ---------------------------------------------------------------------------
 #if defined(GE_OS_LINUX)

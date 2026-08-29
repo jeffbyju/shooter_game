@@ -1,24 +1,7 @@
 #pragma once
-// Hot-path counters.
-//
-// Each thread increments its own counter -- no atomic RMW, no contention, one
-// store per event. Aggregation happens only when a report is produced. The cost
-// of this design is that a snapshot can miss an in-flight increment; at the
-// rates these count that is a rounding error, and it is the right trade for
-// keeping the measured path identical to the unmeasured one.
-//
-// These used to be plain uint64 written by the owning thread and read through
-// std::atomic_ref, with a comment claiming that made the cross-thread read
-// "well-defined rather than a data race we agreed not to talk about".
-//
-// That was wrong, and ThreadSanitizer said so on every counter in the struct.
-// A data race needs BOTH accesses to be atomic; one atomic load against one
-// plain store is still a race and still undefined. The practical hazard is not
-// tearing -- an aligned 64-bit store is atomic on every machine this targets --
-// it is that the compiler may legally keep a plain counter in a register across
-// a loop and write it back once at the end, leaving a reader staring at a
-// frozen value for as long as the loop runs. Which is exactly the situation a
-// per-second stats line is designed to detect.
+// Hot-path counters. One owning thread per counter, aggregated only when a
+// report is produced, so a snapshot can miss an in-flight increment. At these
+// rates that is a rounding error.
 #include <atomic>
 #include <cstdint>
 
@@ -26,20 +9,12 @@
 
 namespace ge::metrics {
 
-// A counter written by exactly one owning thread and read by any other.
+// Written by one thread, read by any. Relaxed load + relaxed store, not
+// fetch_add: only the individual accesses need to be atomic, so this compiles
+// to the same ldr/add/str as ++x where fetch_add would be an ldadd.
 //
-// Relaxed load + relaxed store, NOT fetch_add. That distinction is the whole
-// design: because a single thread owns the increment, the read-modify-write
-// does not need to be atomic, only the individual accesses do. Checked in the
-// assembly rather than assumed -- on arm64 at -O2:
-//
-//     plain ++x                     ldr / add / str
-//     relaxed load + relaxed store  ldr / add / str      <- identical
-//     fetch_add(relaxed)            ldadd                <- a real RMW
-//     fetch_add(seq_cst)            ldaddal              <- RMW plus barriers
-//
-// So defined behaviour here costs nothing, and the counter stays a plain store
-// on the hot path exactly as the original design intended.
+// atomic_ref on the read side alone is not enough -- a race needs both sides
+// atomic, and TSan flags every counter if it is not.
 class Counter {
 public:
     Counter() noexcept = default;

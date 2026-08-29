@@ -188,7 +188,7 @@ private:
     int           bucket_count_         = 0;
 };
 
-// The percentile set quoted throughout docs/. p99.9 and p99.99 are included
+// The percentile set quoted throughout the reports. p99.9 and p99.99 are included
 // because a server at 1M msg/s produces 1000 samples/s beyond p99.9 -- that is
 // a tail users hit continuously, not a rounding artefact.
 struct LatencySummary {

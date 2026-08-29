@@ -519,13 +519,9 @@ GE_TEST(powerup_field_is_half_fuel_half_ammo) {
     CHECK_EQ(fuel, ammo);
 }
 
-// ---------------------------------------------------------------------------
-// Arena mode on the shard. Until these were written the whole arena path
-// through WorldShard -- join, tick, AOI, delta -- had no test at all: every
-// arena test drove `ge::world::Arena` directly, and the shard wrapper around
-// it was exercised only by running the server by hand. That is the half of the
-// code the spatial-grid port touched.
-// ---------------------------------------------------------------------------
+// Arena mode on the shard. The whole path through WorldShard -- join, tick,
+// AOI, delta -- had no test: arena tests drove ge::world::Arena directly and
+// stopped there. That is the half the grid port touched.
 namespace {
 struct ArenaShardFixture {
     WorldShard shard;

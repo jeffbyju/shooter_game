@@ -53,7 +53,7 @@ public:
 
     // `backend` defaults to Poll rather than Auto: the io_uring path has not yet
     // been validated on real hardware, and defaulting to an unvalidated code
-    // path would be choosing novelty over correctness. See docs/tutorial/14.
+    // path would be choosing novelty over correctness. See
     core::Status open(Backend backend = Backend::Poll);
 
     // What this reactor actually ended up using, for the run report.

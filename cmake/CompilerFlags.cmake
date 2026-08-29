@@ -11,7 +11,7 @@ target_compile_options(ge_flags INTERFACE
 )
 
 # -O3 everywhere that is not an explicit Debug build; the hot paths here are
-# measured, so the numbers in docs/ are only meaningful at this level.
+# measured, so the benchmark numbers only mean anything at this level.
 target_compile_options(ge_flags INTERFACE $<$<NOT:$<CONFIG:Debug>>:-O3>)
 
 if(GE_NATIVE_ARCH)

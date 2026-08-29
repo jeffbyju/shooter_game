@@ -1,15 +1,11 @@
 #pragma once
-// Arena storage: the 3D shooter's entity model.
+// Arena storage: the 3D shooter's entity model. Same rules as snake.hpp --
+// structure of arrays, nothing allocated on the tick path -- but a player is
+// just a point with a velocity and two angles.
 //
-// Same rules as snake.hpp -- structure of arrays, no allocation on the tick
-// path, no pointer chasing -- but the entity is simpler. A player is a point
-// with a velocity and two look angles, so every per-tick loop here is a flat
-// walk over parallel float arrays.
-//
-// The world is a box: x and z span [0, size], y is up with the floor at 0.
-// There is no level geometry. That is a deliberate limit, not an oversight --
-// the point of this mode is to exercise the transport with a different message
-// shape and a different simulation, and adding a BSP would not change either.
+// The world is a box: x,z in [0,size], y up with the floor at 0. No level
+// geometry, deliberately: this mode exists to exercise the transport with a
+// different message shape, and a BSP would not change that.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -369,17 +365,11 @@ public:
         tick_flags_[i] |= proto::kPlayerFired;
     }
 
-    // Walks players against powerups and applies what each one gives. O(n*m)
-    // with m = kMaxPickups = 12, so 32 players cost 384 cylinder tests a tick
-    // -- less than the branch that would decide whether a spatial index was
-    // worth consulting.
+    // O(n*m) with m = 12, so 384 tests a tick at 32 players -- cheaper than
+    // deciding whether to consult an index.
     //
-    // A cylinder, not a sphere: horizontal reach should not shrink because you
-    // happen to be mid-jump over the thing you are trying to collect.
-    //
-    // Deliberately skips a player who is already full. A fuel can absorbed at
-    // 100 fuel is not merely wasted, it is denied to whoever comes past next
-    // actually needing it.
+    // A cylinder, not a sphere: reach should not shrink mid-jump. Skips players
+    // already full, so a can is not absorbed and denied to the next person.
     void collect_pickups(PickupField& field, std::uint64_t tick,
                          std::uint64_t respawn_ticks) noexcept {
         const std::size_t    n = id_.size();

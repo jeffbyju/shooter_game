@@ -3,7 +3,7 @@
 //
 // Measurement instrument matters as much as the thing measured, so this header
 // also exposes `Clock::probe()`, which reports the clock's own call overhead and
-// its observable granularity. Every latency number in docs/ is quoted alongside
+// its observable granularity. Every latency number in the benchmark output is quoted alongside
 // those two figures; a p50 near the granularity floor is not a measurement.
 #include <cstdint>
 #include <ctime>

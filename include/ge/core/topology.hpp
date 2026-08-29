@@ -3,7 +3,7 @@
 //
 // Why this matters more than it looks. A thread that migrates between cores
 // loses its L1 and L2 working set and has to fault it back in from L3 or
-// memory -- roughly 100ns per line (see docs/tutorial/02-the-numbers.md). For a
+// memory -- roughly 100ns per line. For a
 // thread whose hot data is a ring buffer and a few connection objects, a single
 // migration can cost more than the thousand messages it was about to handle.
 //
@@ -16,7 +16,7 @@
 // on the same NUMA node. Linux exposes both; macOS exposes neither, and this
 // header says so rather than pretending.
 //
-// Background, if NUMA is unfamiliar: docs/numa/ explains it in five parts. The
+// Background, if NUMA is unfamiliar: The
 // one rule worth knowing before reading this file is first-touch -- Linux
 // allocates a physical page on the node of the thread that first *writes* it,
 // not the one that allocated it -- which is why pinning must happen before

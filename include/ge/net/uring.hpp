@@ -4,7 +4,7 @@
 // What io_uring changes
 // ---------------------
 // epoll costs one syscall per wait, plus one epoll_ctl per interest change. A
-// syscall is ~1-12us here (see docs/tutorial/06-networking.md), and an event
+// syscall is ~1-12us here, and an event
 // loop that wakes 100k times a second is spending real time in the kernel
 // boundary rather than on work.
 //
@@ -39,7 +39,7 @@
 // Kernel bypass (AF_XDP, DPDK, Solarflare Onload) removes the kernel from the
 // data path: the NIC DMAs frames straight into user memory and you supply the
 // TCP stack yourself. That is a rewrite of this layer, not a backend swap, and
-// it is not implemented here. See docs/kernel-bypass/ for what it would take.
+// it is not implemented here. 
 //
 // No liburing dependency -- the syscalls are made directly, consistent with the
 // rest of the project having no third-party code.

@@ -53,7 +53,7 @@ struct Args {
 "    --busy-poll         shards spin instead of sleeping between ticks\n"
 "    --poll-timeout MS   server event loop timeout          (default 50)\n"
 "    --io-backend B      poll (default) | uring | auto. uring is implemented\n"
-"                        but UNVALIDATED; see docs/tutorial/14\n"
+"                        but UNVALIDATED; see the load notes\n"
 "    --spin-us N         I/O threads spin for N us after an event before\n"
 "                        blocking; trades CPU for idle-core wakeup latency\n"
 "\n"

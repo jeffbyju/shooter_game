@@ -1,10 +1,6 @@
 #pragma once
-// Just enough linear algebra for a first-person camera.
-//
-// Hand-rolled rather than pulled in: four functions are needed, all of them
-// textbook, and a matrix library would be a second third-party dependency
-// after SDL3 for no benefit. Column-major, matching what glUniformMatrix4fv
-// expects with transpose = GL_FALSE.
+// Just enough linear algebra for a first-person camera. Column-major, which is
+// what glUniformMatrix4fv wants with transpose = GL_FALSE.
 #include <cmath>
 
 namespace ge::client {
@@ -40,24 +36,18 @@ inline Mat4 perspective(float fov_y_rad, float aspect, float znear, float zfar) 
     return r;
 }
 
-// Right-handed look-at built directly from yaw/pitch, so it matches the
-// server's convention exactly: forward is +z rotated by yaw, y is up.
+// Right-handed, built from yaw/pitch so it matches the server: forward is +z
+// rotated by yaw, y is up.
 inline Mat4 view_from(float eye_x, float eye_y, float eye_z, float yaw, float pitch) {
     const float cp = std::cos(pitch), sp = std::sin(pitch);
     const float fx = std::sin(yaw) * cp, fy = sp, fz = std::cos(yaw) * cp;
-    // right = cross(forward, worldUp);  up = cross(right, forward).
+    // right = forward x up. Check it on the standard GL camera, where the
+    // answer is not in doubt: (0,0,-1)x(0,1,0) = (+1,0,0). Our forward is +z,
+    // so right is -x.
     //
-    // Validate the rule against the standard GL camera, where the answer is not
-    // in doubt: forward=-z, up=+y, right=+x, and (0,0,-1)x(0,1,0) = (+1,0,0).
-    // So right = forward x up. Our forward is +z, which makes right -x, NOT +x.
-    //
-    // This previously used right=+x with up=cross(forward,right). That also
-    // yields up=+y, so it looked correct and every perpendicularity check
-    // passed -- but det(right, up, -forward) came out -1 instead of +1, meaning
-    // the view basis was a rotation PLUS a reflection and the world rendered
-    // mirrored. Nothing in this arena is handed (symmetric cubes, symmetric
-    // grid, no text), so the mirror was self-consistent and invisible; it would
-    // have appeared the moment anything asymmetric was drawn.
+    // This used right=+x before. up still came out +y and every
+    // perpendicularity check passed, but det(right,up,-forward) was -1 -- a
+    // reflection. Nothing here is handed, so the mirrored world was invisible.
     const float rx = -std::cos(yaw), ry = 0.0f, rz = std::sin(yaw);
     const float ux = ry * fz - rz * fy;
     const float uy = rz * fx - rx * fz;
@@ -73,13 +63,8 @@ inline Mat4 view_from(float eye_x, float eye_y, float eye_z, float yaw, float pi
     return r;
 }
 
-// Translate + scale with a spin about Y. Used for powerups, which rotate so
-// they read as collectable objects rather than as scenery -- a static cube on
-// the floor of a shooter looks like a crate.
-//
-// Column-major, and the rotation is applied BEFORE the scale in the maths
-// below (the scale factors multiply into the rotated basis), which for a
-// uniform-in-xz scale is the same thing either way.
+// Translate + scale with a spin about Y, for powerups: a static cube on the
+// floor reads as scenery. Rotation applies before the scale.
 inline Mat4 translate_rotate_y_scale(float x, float y, float z, float angle,
                                      float sx, float sy, float sz) {
     const float c = std::cos(angle), s = std::sin(angle);
@@ -98,33 +83,21 @@ inline Mat4 translate_scale(float x, float y, float z, float sx, float sy, float
     return r;
 }
 
-// The matrix a NORMAL has to be transformed by, which is not the model matrix.
+// Normals transform by the inverse transpose of the upper-left 3x3, not by the
+// model matrix: squash a cube in x and a slanted face's normal tilts away from
+// x while its tangent tilts toward it. Equal for pure rotation, and off only by
+// a constant normalize() removes for uniform scale, which is why mat3(u_model)
+// survived so long here.
 //
-// A tangent lying in the surface is stretched along with the surface. The
-// normal is perpendicular to it and must do the opposite -- squash a cube in x
-// and the normal of a slanted face tilts AWAY from x, not toward it. Applying
-// the model matrix to both tilts them the same way and they stop being
-// perpendicular, so the lighting is computed against a direction that is not
-// the surface normal.
-//
-// The correct transform is the inverse transpose of the upper-left 3x3. For a
-// pure rotation that equals the matrix itself (M^-1 = M^T, so (M^-1)^T = M),
-// and for a UNIFORM scale it differs only by a constant that normalize()
-// removes -- which is why `mat3(u_model)` survived here for so long. It is
-// wrong the moment a scale is non-uniform, and the player body is scaled
-// 0.8 x 1.8 x 0.8.
-//
-// inverse(A)^T is the cofactor matrix over the determinant. Computing it that
-// way needs no division until the end and no general matrix inverse.
+// inverse(A)^T is the cofactor matrix over the determinant -- no general
+// inverse needed, and only one division.
 inline Mat3 normal_matrix(const Mat4& model) {
     // Upper-left 3x3 of the column-major 4x4: a[col][row].
     const float a00 = model.m[0], a10 = model.m[1], a20 = model.m[2];
     const float a01 = model.m[4], a11 = model.m[5], a21 = model.m[6];
     const float a02 = model.m[8], a12 = model.m[9], a22 = model.m[10];
 
-    // Cofactors. c[i][j] is the signed minor of a[i][j], and the cofactor
-    // matrix laid out this way IS the transpose of the adjugate's transpose --
-    // i.e. exactly inverse-transpose, up to the determinant.
+    // c[i][j] is the signed minor of a[i][j].
     const float c00 =  (a11 * a22 - a21 * a12);
     const float c10 = -(a01 * a22 - a21 * a02);
     const float c20 =  (a01 * a12 - a11 * a02);
@@ -136,17 +109,14 @@ inline Mat3 normal_matrix(const Mat4& model) {
     const float c22 =  (a00 * a11 - a10 * a01);
 
     const float det = a00 * c00 + a10 * c10 + a20 * c20;
-    // A degenerate model matrix (a zero scale on some axis) has no inverse.
-    // Falling back to the 3x3 keeps the frame rendering instead of filling the
-    // screen with NaN, which is the right failure for a renderer.
+    // No inverse for a zero scale. Fall back to the 3x3 rather than fill the
+    // screen with NaN.
     if (det > -1e-20f && det < 1e-20f)
         return Mat3{{a00, a10, a20, a01, a11, a21, a02, a12, a22}};
 
-    // Column-major, so each triple below is a COLUMN: entry [c*3+r] must be
-    // cofactor(r, c). Writing the rows here instead yields the inverse rather
-    // than the inverse transpose -- and the two are identical for a diagonal
-    // matrix, so a test using only axis-aligned scales passes either way. This
-    // was wrong first time round for exactly that reason.
+    // Column-major: [c*3+r] must be cofactor(r,c). Writing rows here gives the
+    // inverse instead, which is the same matrix for a diagonal input -- so an
+    // axis-aligned test passes either way. It was wrong this way first.
     const float inv = 1.0f / det;
     return Mat3{{c00 * inv, c10 * inv, c20 * inv,
                  c01 * inv, c11 * inv, c21 * inv,

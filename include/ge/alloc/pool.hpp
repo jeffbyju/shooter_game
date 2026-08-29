@@ -19,7 +19,7 @@
 // file descriptor in the first 8 bytes, so a recycled slot read back as a
 // plausible fd. Connections therefore live in a fixed slab with a separate
 // index free list, which keeps every slot readable forever. See
-// docs/ARCHITECTURE.md.
+//
 #include <cstddef>
 #include <cstdint>
 #include <new>
