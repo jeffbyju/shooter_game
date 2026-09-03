@@ -141,7 +141,7 @@ enum SnakeFlags : std::uint16_t {
 };
 
 // One point of a snake's body. 8 bytes keeps the whole tail 8-aligned, which is
-// what lets a client read it in place (see docs/tutorial/03-the-protocol.md).
+// what lets a client read it in place.
 struct Point2 {
     float x, y;
 };
@@ -412,5 +412,9 @@ inline constexpr std::size_t kMaxFrameBytes =
                                               : kMaxArenaFrameBytes;
 static_assert(kMaxFrameBytes <= kMaxPayload,
               "worst-case delta must fit one frame");
+// Batched senders lay out slots at this stride, so the stride has to keep each
+// slot aligned or the second datagram in a batch starts misaligned.
+static_assert(kMaxFrameBytes % kFrameAlign == 0,
+              "frame bound must be a multiple of the frame alignment");
 
 } // namespace ge::proto

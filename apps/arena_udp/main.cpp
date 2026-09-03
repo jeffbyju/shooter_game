@@ -1,38 +1,13 @@
-// ge_arena_udp -- the arena served over UDP datagrams.
+// ge_arena_udp -- the arena on one core, over UDP.
 //
-// WHY THIS EXISTS
-// ---------------
-// AF_XDP and DPDK deliver raw Ethernet frames. Neither gives you TCP, so a
-// server that needs a byte stream cannot use either without a userspace TCP
-// stack (see docs/af-xdp/01-why-the-server-cannot-use-it.md). The way to make
-// kernel bypass *possible* is therefore not to port the transport -- it is to
-// stop needing a stream.
-//
-// The arena protocol was designed for that from the start:
-//
-//   * ShooterInput carries ABSOLUTE look angles and an absolute button bitset,
-//     not deltas. A lost input costs one stale tick and nothing else; there is
-//     no state to resynchronise.
-//   * ShooterDelta is a FULL snapshot of everything visible, not a diff. A lost
-//     delta is superseded by the next one 16.7 ms later.
-//
-// Both properties make every message independently meaningful, so each one fits
-// in a single datagram and loss is survivable. That is the whole rewrite: the
-// game logic is unchanged, the wire format is unchanged, and the transport
-// becomes replaceable.
-//
-// WHAT BYPASS WOULD REPLACE
-// -------------------------
-// The two syscalls below, and nothing else:
-//
-//   recvmmsg()  ->  read descriptors from an AF_XDP RX ring (or DPDK rx_burst)
-//   sendmmsg()  ->  write descriptors to an AF_XDP TX ring (or DPDK tx_burst)
-//
-// Everything between them -- parse, simulate, encode -- is untouched. The
-// measured cost of that swap is in docs/af-xdp/05-results.md: ~1.56 us per
-// traversal on Graviton3.
+// Every message is independently meaningful: inputs carry absolute angles and
+// buttons, snapshots are full state rather than diffs. So one message fits one
+// datagram, loss costs a single stale tick, and there is no stream to
+// reassemble -- which is what would make recvmmsg/sendmmsg swappable for an
+// AF_XDP or DPDK ring without touching anything above the transport.
 #include <algorithm>
 #include <arpa/inet.h>
+#include <array>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
@@ -61,6 +36,164 @@ void on_signal(int) { g_stop = 1; }
 
 inline constexpr std::uint32_t kNoSlot = 0xffffffffu;
 
+// --------------------------------------------------------------- batched I/O
+//
+// 2048 players at 60 Hz is ~370k syscalls/s one datagram at a time, and the
+// process profiles at ~83% kernel. recvmmsg/sendmmsg carry up to kBatch per
+// call instead.
+//
+// Linux only; elsewhere the batch collapses to 1 and the plain path runs. That
+// is also how the A/B works -- same binary, --batch picks the path, so a
+// difference cannot be a build difference.
+inline constexpr int kMaxBatch   = 128;
+inline constexpr int kRxSlotSize = 2048;   // >> the largest client frame (48 B)
+
+#if defined(__linux__)
+#define GE_HAVE_MMSG 1
+#else
+#define GE_HAVE_MMSG 0
+#endif
+
+// Receives up to `batch` datagrams per syscall.
+class RxBatch {
+public:
+    void configure(int batch) {
+        batch_ = std::clamp(batch, 1, kMaxBatch);
+        buf_.assign(std::size_t(batch_) * kRxSlotSize, std::byte{});
+#if GE_HAVE_MMSG
+        for (int i = 0; i < batch_; ++i) {
+            iov_[std::size_t(i)].iov_base = slot(i);
+            iov_[std::size_t(i)].iov_len  = kRxSlotSize;
+            auto& h = msgs_[std::size_t(i)].msg_hdr;
+            h = {};
+            h.msg_name    = &addrs_[std::size_t(i)];
+            h.msg_namelen = sizeof(sockaddr_in);
+            h.msg_iov     = &iov_[std::size_t(i)];
+            h.msg_iovlen  = 1;
+        }
+#endif
+    }
+    int batch() const noexcept { return batch_; }
+
+    // Returns the number of datagrams read, or <= 0 when the socket is drained.
+    int recv(int fd) noexcept {
+#if GE_HAVE_MMSG
+        if (batch_ > 1) {
+            // msg_namelen is an in/out parameter: the kernel overwrites it with
+            // the address length it actually wrote, so it has to be reset every
+            // call or a later batch silently truncates the source address.
+            for (int i = 0; i < batch_; ++i)
+                msgs_[std::size_t(i)].msg_hdr.msg_namelen = sizeof(sockaddr_in);
+            return ::recvmmsg(fd, msgs_.data(), unsigned(batch_), MSG_DONTWAIT, nullptr);
+        }
+#endif
+        socklen_t flen = sizeof(sockaddr_in);
+        const ssize_t n = ::recvfrom(fd, slot(0), kRxSlotSize, MSG_DONTWAIT,
+                                     reinterpret_cast<sockaddr*>(&addrs_[0]), &flen);
+        if (n <= 0) return int(n);
+        len0_ = std::uint32_t(n);
+        return 1;
+    }
+
+    const std::byte*   data(int i) const noexcept { return slot(i); }
+    std::size_t        size(int i) const noexcept {
+#if GE_HAVE_MMSG
+        if (batch_ > 1) return msgs_[std::size_t(i)].msg_len;
+#endif
+        (void)i; return len0_;
+    }
+    const sockaddr_in& addr(int i) const noexcept { return addrs_[std::size_t(i)]; }
+
+private:
+    std::byte* slot(int i) noexcept { return buf_.data() + std::size_t(i) * kRxSlotSize; }
+    const std::byte* slot(int i) const noexcept {
+        return buf_.data() + std::size_t(i) * kRxSlotSize;
+    }
+    int                                     batch_ = 1;
+    std::uint32_t                           len0_  = 0;
+    std::vector<std::byte>                  buf_;
+    std::array<sockaddr_in, kMaxBatch>      addrs_{};
+#if GE_HAVE_MMSG
+    std::array<mmsghdr, kMaxBatch>          msgs_{};
+    std::array<iovec,   kMaxBatch>          iov_{};
+#endif
+};
+
+// Accumulates outbound datagrams and flushes them with one syscall.
+//
+// The encoder writes straight into the staging slot rather than into a scratch
+// buffer that is then copied, so batching costs no extra memcpy -- it only
+// changes when the kernel is told about the bytes.
+class TxBatch {
+public:
+    void configure(int batch) {
+        batch_ = std::clamp(batch, 1, kMaxBatch);
+        buf_.assign(std::size_t(batch_) * proto::kMaxFrameBytes, std::byte{});
+    }
+    int  batch() const noexcept { return batch_; }
+    bool full()  const noexcept { return n_ >= batch_; }
+
+    // Where to encode the next datagram. Always 8-byte aligned: the slot stride
+    // is kMaxFrameBytes, which the protocol already requires be a multiple of 8.
+    std::byte* staging() noexcept { return buf_.data() + std::size_t(n_) * proto::kMaxFrameBytes; }
+
+    void commit(std::size_t len, const sockaddr_in& to) noexcept {
+        lens_[std::size_t(n_)]  = len;
+        addrs_[std::size_t(n_)] = to;
+        ++n_;
+    }
+
+    // Returns {sent, failed}. A short sendmmsg is not an error to retry here:
+    // the socket buffer is full, which is backpressure, and the next tick
+    // carries strictly newer state. Shedding is the same policy the rest of
+    // the server uses.
+    struct Result { std::uint64_t sent = 0, failed = 0; };
+    Result flush(int fd) noexcept {
+        Result r{};
+        if (n_ == 0) return r;
+#if GE_HAVE_MMSG
+        if (batch_ > 1) {
+            for (int i = 0; i < n_; ++i) {
+                iov_[std::size_t(i)].iov_base = buf_.data() + std::size_t(i) * proto::kMaxFrameBytes;
+                iov_[std::size_t(i)].iov_len  = lens_[std::size_t(i)];
+                auto& h = msgs_[std::size_t(i)].msg_hdr;
+                h = {};
+                h.msg_name    = &addrs_[std::size_t(i)];
+                h.msg_namelen = sizeof(sockaddr_in);
+                h.msg_iov     = &iov_[std::size_t(i)];
+                h.msg_iovlen  = 1;
+            }
+            const int sent = ::sendmmsg(fd, msgs_.data(), unsigned(n_), 0);
+            if (sent < 0) r.failed = std::uint64_t(n_);
+            else { r.sent = std::uint64_t(sent); r.failed = std::uint64_t(n_ - sent); }
+            n_ = 0;
+            return r;
+        }
+#endif
+        for (int i = 0; i < n_; ++i) {
+            const ssize_t w = ::sendto(fd, buf_.data() + std::size_t(i) * proto::kMaxFrameBytes,
+                                       lens_[std::size_t(i)], 0,
+                                       reinterpret_cast<sockaddr*>(&addrs_[std::size_t(i)]),
+                                       sizeof(sockaddr_in));
+            if (w < 0) ++r.failed; else ++r.sent;
+        }
+        n_ = 0;
+        return r;
+    }
+
+private:
+    int                                    batch_ = 1;
+    int                                    n_     = 0;
+    std::vector<std::byte>                 buf_;
+    std::array<std::size_t,  kMaxBatch>    lens_{};
+    std::array<sockaddr_in,  kMaxBatch>    addrs_{};
+#if GE_HAVE_MMSG
+    std::array<mmsghdr, kMaxBatch>         msgs_{};
+    std::array<iovec,   kMaxBatch>         iov_{};
+#endif
+};
+
+
 struct Peer {
     sockaddr_in   addr{};
     std::uint32_t session    = 0;
@@ -80,20 +213,13 @@ struct Peer {
     bool          used       = false;
 };
 
-// (address, port) -> peer slot. Open addressed with linear probing over a
-// power-of-two table, so a lookup is a hash and a handful of contiguous probes
-// rather than a scan of every slot.
+// (address, port) -> peer slot, open addressed with linear probing. Replaces a
+// scan that ran once per inbound datagram -- ~220M comparisons/s at 2048
+// players, and 21% of the server's CPU.
 //
-// The scan it replaces ran once per *inbound datagram*: at 2048 players sending
-// 120 datagrams a second each it was ~220 million address comparisons a second,
-// and it measured as 21% of the server's CPU -- the single largest cost in the
-// process, larger than the simulation it exists to feed.
-//
-// Erase is a full rebuild rather than tombstones or backward-shift deletion.
-// That is only correct because eviction happens at most once per tick and only
-// for peers that have been silent for five seconds; rebuilding a 4096-entry
-// table is far cheaper than carrying a tombstone branch through the lookup that
-// runs 200000 times a second.
+// Erase rebuilds the whole table rather than using tombstones. Only correct
+// because eviction happens at most once a tick, and cheaper than a tombstone
+// branch in a lookup that runs 200k times a second.
 class PeerTable {
 public:
     void init(std::size_t peers) {
@@ -161,6 +287,12 @@ struct Stats {
     // Inputs the sequence numbers say were sent and never arrived, summed over
     // all peers. The denominator is `inputs`.
     std::uint64_t input_gaps = 0;
+    // Syscalls actually issued, against datagrams carried. datagrams/syscall is
+    // the batching efficiency number and the first thing to look at when
+    // throughput stops scaling.
+    std::uint64_t rx_syscalls = 0, rx_batched = 0;
+    std::uint64_t tx_syscalls = 0, tx_batched = 0;
+    std::uint64_t aoi_candidates = 0;
 };
 
 void usage(const char* a0) {
@@ -173,6 +305,11 @@ void usage(const char* a0) {
 "  --aoi F       area of interest    (default 400)\n"
 "  --max N       max players         (default 256)\n"
 "  --pickups N   powerups on the map (default 12, max %zu)\n"
+"  --aoi-scan    skip the spatial grid and scan every entity, as the\n"
+"                original did -- the A/B for the AOI work, same binary\n"
+"  --batch N     datagrams per syscall; 1 = one recvfrom/sendto each\n"
+"                (default 64 on Linux, 1 elsewhere -- recvmmsg/sendmmsg\n"
+"                 do not exist on macOS)\n"
 "  --quiet       no periodic stats\n", a0, proto::kMaxPickups);
 }
 
@@ -185,6 +322,8 @@ int main(int argc, char** argv) {
     int n_pickups = int(proto::kMaxPickups);
     float world_size = 200.0f, aoi = 400.0f;
     bool quiet = false;
+    int  batch_size = GE_HAVE_MMSG ? 64 : 1;
+    bool aoi_scan   = false;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* {
@@ -198,6 +337,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--aoi"))     aoi = float(std::atof(next()));
         else if (!std::strcmp(argv[i], "--max"))     max_players = std::atoi(next());
         else if (!std::strcmp(argv[i], "--pickups")) n_pickups = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--aoi-scan")) aoi_scan = true;
+        else if (!std::strcmp(argv[i], "--batch")) batch_size = std::atoi(next());
         else if (!std::strcmp(argv[i], "--quiet"))   quiet = true;
         else { usage(argv[0]); return 2; }
     }
@@ -246,15 +387,9 @@ int main(int argc, char** argv) {
     world::PickupField pickups;
     pickups.init(std::uint16_t(n_pickups), world_size, rng);
 
-    // Area-of-interest index. The delta builder used to test every player
-    // against every other player -- 2048 squared is 4.2 million distance tests
-    // per tick, which profiled at about 13% of the process and is the term that
-    // makes player count quadratic rather than linear.
-    //
-    // A cell the size of the AOI radius means a query touches at most nine
-    // cells, and the uniform grid is rebuilt by counting sort in three linear
-    // passes, so the per-tick cost goes from O(n^2) to O(n + n*k) where k is the
-    // handful of players actually nearby.
+    // AOI index. The delta builder used to test every player against every
+    // other -- 4.2M distance tests a tick at 2048 players, ~13% of the process.
+    // Cell size = AOI radius, so a query touches nine cells at most.
     world::SpatialGrid aoi_grid;
     aoi_grid.configure(world::Bounds{0.0f, 0.0f, world_size, world_size},
                        aoi, std::size_t(max_players));
@@ -268,10 +403,15 @@ int main(int argc, char** argv) {
     std::int64_t next_tick = Clock::now_ns();
     std::uint64_t tick = 0;
     std::int64_t last_report = Clock::now_ns();
+    std::uint64_t last_report_tick = 0;
 
-    // One receive buffer reused every iteration. 2 KiB is well above the
-    // largest message the client can send (a 48-byte ShooterInput frame).
-    alignas(8) std::byte rbuf[2048];
+    // Receive and send staging, sized once. Nothing below allocates.
+    RxBatch rx; rx.configure(batch_size);
+    TxBatch tx; tx.configure(batch_size);
+    // Scratch for the small replies (welcome, pong) that are answered inline
+    // rather than batched: they are rare next to snapshots, and keeping them
+    // off the batch avoids interleaving a reply into the middle of a tick's
+    // snapshot flush.
     alignas(8) std::byte sbuf[proto::kMaxFrameBytes];
 
     std::printf("ge_arena_udp on %s:%u -- %d Hz, world %.0f, aoi %.0f, max %d players\n",
@@ -290,14 +430,17 @@ int main(int argc, char** argv) {
         // partial-frame state, and no per-peer receive buffer -- which is the
         // simplification that makes a bypass transport a drop-in here.
         for (;;) {
-            sockaddr_in from{};
-            socklen_t flen = sizeof from;
-            const ssize_t n = ::recvfrom(fd, rbuf, sizeof rbuf, MSG_DONTWAIT,
-                                         reinterpret_cast<sockaddr*>(&from), &flen);
-            if (n <= 0) break;
-            ++st.datagrams_in;
+            const int got = rx.recv(fd);
+            if (got <= 0) break;
+            st.datagrams_in += std::uint64_t(got);
+            st.rx_syscalls  += 1;
+            st.rx_batched   += std::uint64_t(got);
 
-            proto::FrameReader reader({rbuf, std::size_t(n)});
+          for (int bi = 0; bi < got; ++bi) {
+            sockaddr_in     from = rx.addr(bi);
+            const socklen_t flen = sizeof from;
+
+            proto::FrameReader reader({rx.data(bi), rx.size(bi)});
             proto::FrameView f;
             if (reader.next(f) != proto::ParseError::Ok) { ++st.bad; continue; }
 
@@ -306,16 +449,10 @@ int main(int argc, char** argv) {
 
             switch (f.type()) {
                 case proto::MsgType::ClientHello: {
-                    // A hello from a peer we already know is a RETRY, not a
-                    // duplicate: it means our ServerWelcome was lost. Dropping
-                    // it silently -- which this did -- leaves the client
-                    // sessionless forever while it goes on sending inputs that
-                    // land here, get counted in `in`, and are discarded. The
-                    // join then fails in a way neither end can see.
-                    //
-                    // Re-answering is safe because join is idempotent: the
-                    // session, slot and entity already exist, so this re-sends
-                    // the same welcome rather than creating a second player.
+                    // A hello from a known peer is a retry, not a duplicate:
+                    // our welcome was lost. Dropping it left the client
+                    // sessionless forever, still sending inputs we discarded.
+                    // Join is idempotent, so just answer again.
                     if (pi != 0xffffffffu) {
                         const Peer& ex = peers[pi];
                         const proto::ServerWelcome rw{ge::core::mix64(ex.session),
@@ -379,10 +516,8 @@ int main(int argc, char** argv) {
                     ++st.inputs;
                     peers[pi].last_seen = now;
 
-                    // Signed difference so a uint32 wrap does not read as a
-                    // two-billion-datagram loss. A negative advance is a
-                    // reordered datagram, not a gap -- UDP may deliver out of
-                    // order, and counting that as loss would overstate it.
+                    // Signed difference: a wrap must not read as two billion
+                    // lost, and a negative advance is reordering, not loss.
                     if (peers[pi].has_seq) {
                         const std::int32_t adv =
                             std::int32_t(in->input_seq - peers[pi].last_seq);
@@ -406,16 +541,16 @@ int main(int argc, char** argv) {
                 }
                 default: break;
             }
+          }  // for bi: one datagram of the batch
+          // A short read means the socket is drained; a full one means there
+          // may be more waiting, so go round again.
+          if (got < rx.batch()) break;
         }
 
         // ---- 2. wait for the next tick, or for a datagram --------------------
-        // Blocking here rather than spinning. The first version was
-        // `if (now < next_tick) continue;`, which polls recvfrom flat out
-        // between ticks: it pinned a whole core, and on a 2-vCPU box that
-        // starved the server itself -- ping latency measured 64 ms when the
-        // link RTT was 36 ms. poll() with the remaining time sleeps until
-        // either a datagram lands or the tick is due, so the loop is idle
-        // exactly when it has nothing to do.
+        // Block rather than spin. `if (now < next_tick) continue;` polls flat
+        // out between ticks and pins a core -- on a 2-vCPU box that starved the
+        // server and measured 64 ms of ping against a 36 ms link.
         std::int64_t now = Clock::now_ns();
         if (now < next_tick) {
             const std::int64_t left_ns = next_tick - now;
@@ -447,7 +582,7 @@ int main(int argc, char** argv) {
         pickups.update(tick, world_size, rng);
         arena.collect_pickups(pickups, tick, pickup_respawn_ticks);
 
-        aoi_grid.rebuild(arena.xs(), arena.zs(), arena.size());
+        if (!aoi_scan) aoi_grid.rebuild(arena.xs(), arena.zs(), arena.size());
 
         // ---- 3. one delta datagram per player -------------------------------
         const float r2 = aoi * aoi;
@@ -470,15 +605,30 @@ int main(int argc, char** argv) {
             };
             emit(i);
             const float px = arena.x(i), pz = arena.z(i);
-            aoi_grid.query_aabb(px, pz, aoi, [&](std::span<const std::uint32_t> cell) {
-                for (const std::uint32_t o : cell) {
-                    if (count >= proto::kMaxAoiPlayers) return;
+            if (aoi_scan) {
+                // The original: every player against every other. Kept behind
+                // a flag so the A/B is one binary and a difference cannot be
+                // a build difference.
+                for (std::uint32_t o = 0; o < arena.size() &&
+                                          count < proto::kMaxAoiPlayers; ++o) {
                     if (o == i) continue;
                     const float dx = arena.x(o) - px, dz = arena.z(o) - pz;
+                    ++st.aoi_candidates;
                     if (dx * dx + dz * dz > r2) continue;
                     emit(o);
                 }
-            });
+            } else {
+                aoi_grid.query_aabb(px, pz, aoi, [&](std::span<const std::uint32_t> cell) {
+                    st.aoi_candidates += cell.size();
+                    for (const std::uint32_t o : cell) {
+                        if (count >= proto::kMaxAoiPlayers) return;
+                        if (o == i) continue;
+                        const float dx = arena.x(o) - px, dz = arena.z(o) - pz;
+                        if (dx * dx + dz * dz > r2) continue;
+                        emit(o);
+                    }
+                });
+            }
 
             // Every powerup, every tick, to every player -- not only the ones
             // in range and not only the ones that changed. 12 records is 192
@@ -503,18 +653,33 @@ int main(int argc, char** argv) {
             hdr.count             = count;
             hdr.pickup_count      = np;
 
+            // Straight into the batch slot -- batching adds no copy.
             const std::size_t len = proto::encode_flat2<proto::ShooterDeltaHeader,
                                                         proto::PlayerRecord,
                                                         proto::PickupRecord>(
-                sbuf, hdr, std::span<const proto::PlayerRecord>(recs, count),
+                std::span<std::byte>(tx.staging(), proto::kMaxFrameBytes),
+                hdr, std::span<const proto::PlayerRecord>(recs, count),
                 std::span<const proto::PickupRecord>(picks, np),
                 peers[slot].session, std::uint32_t(tick),
                 std::uint8_t(proto::FrameFlags::ServerSent));
             if (len == 0) continue;
-            if (::sendto(fd, sbuf, len, 0,
-                         reinterpret_cast<sockaddr*>(&peers[slot].addr),
-                         sizeof(sockaddr_in)) < 0) ++st.send_fail;
-            else ++st.datagrams_out;
+            tx.commit(len, peers[slot].addr);
+            if (tx.full()) {
+                const TxBatch::Result r = tx.flush(fd);
+                st.datagrams_out += r.sent;
+                st.send_fail     += r.failed;
+                st.tx_syscalls   += 1;
+                st.tx_batched    += r.sent;
+            }
+        }
+        {   // whatever is left over at the end of the tick
+            const TxBatch::Result r = tx.flush(fd);
+            if (r.sent || r.failed) {
+                st.datagrams_out += r.sent;
+                st.send_fail     += r.failed;
+                st.tx_syscalls   += 1;
+                st.tx_batched    += r.sent;
+            }
         }
 
         // ---- 4. evict silent peers -----------------------------------------
@@ -544,8 +709,13 @@ int main(int argc, char** argv) {
         ++tick;
         if (!quiet && now - last_report > 1'000'000'000LL) {
             last_report = now;
+            // Real ticks, not an assumed 60: when the server falls behind -- the
+            // case this counter exists to show -- a fixed divisor understates it.
+            const std::uint64_t ticks_since = tick - last_report_tick;
+            last_report_tick = tick;
             std::printf("players %3zu  in %6llu/s  out %6llu/s  joins %llu  bad %llu  "
-                        "sendfail %llu  nosession %llu  inputgaps %llu  rewelcome %llu\n",
+                        "sendfail %llu  nosession %llu  inputgaps %llu  rewelcome %llu  "
+                        "dg/syscall rx %.1f tx %.1f  aoicand/tick %.0f\n",
                         arena.size(),
                         static_cast<unsigned long long>(st.datagrams_in),
                         static_cast<unsigned long long>(st.datagrams_out),
@@ -554,8 +724,14 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(st.send_fail),
                         static_cast<unsigned long long>(st.no_session),
                         static_cast<unsigned long long>(st.input_gaps),
-                        static_cast<unsigned long long>(st.rewelcomes));
+                        static_cast<unsigned long long>(st.rewelcomes),
+                        st.rx_syscalls ? double(st.rx_batched) / double(st.rx_syscalls) : 0.0,
+                        st.tx_syscalls ? double(st.tx_batched)   / double(st.tx_syscalls) : 0.0,
+                        ticks_since ? double(st.aoi_candidates) / double(ticks_since)
+                                    : 0.0);
             st.datagrams_in = st.datagrams_out = 0;
+            st.rx_syscalls = st.rx_batched = st.tx_syscalls = st.tx_batched = 0;
+            st.aoi_candidates = 0;
         }
     }
 
