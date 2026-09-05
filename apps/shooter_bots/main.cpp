@@ -1,12 +1,8 @@
-// ge_shooter_bots -- headless arena clients.
+// ge_shooter_bots -- headless arena clients. Functional test and load
+// generator both: bots circle, aim and fire, so damage, death, respawn and
+// scoring get exercised, and EC2 has no display for the real client.
 //
-// Two jobs. It is the functional test for the arena simulation: bots circle,
-// aim at the middle and hold the trigger, so damage, death, respawn and
-// scoring all get exercised and reported. And it is the load generator for
-// remote runs, because an EC2 instance has no display and ge_shooter needs one.
-//
-// It speaks the protocol through the same ge::proto codec and the same
-// NetClient the graphical client uses, so a bug here is a bug there.
+// Same codec and same NetClient as ge_shooter, so a bug here is a bug there.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -33,6 +29,12 @@ struct Bot {
     cl::NetClient net;
     cl::WorldView view;
     float         phase = 0.0f;
+    // Own send schedule. Every bot used to share one deadline and fire in
+    // lockstep, so 2048 inputs landed in a single burst 60 times a second and
+    // the whole run's latency depended on where that burst fell relative to
+    // the server tick. Two runs of one build measured p50 8.5 ms and 19.7 ms.
+    std::int64_t  next_send = 0;
+    bool          due_poll  = false;
     std::uint32_t last_health = ge::world::kMaxHealth;
     std::uint32_t last_tick   = 0xffffffffu;   // so stats count deltas, not polls
     std::uint64_t hits_taken = 0, deaths = 0, shots_seen = 0;
@@ -68,7 +70,8 @@ void usage(const char* a0) {
 }
 
 int cmp_u64(const void* a, const void* b) {
-    const std::uint64_t x = *static_cast<const std::uint64_t*>(a), y = *static_cast<const std::uint64_t*>(b);
+    const std::uint64_t x = *static_cast<const std::uint64_t*>(a),
+        y = *static_cast<const std::uint64_t*>(b);
     return (x > y) - (x < y);
 }
 
@@ -133,15 +136,29 @@ int main(int argc, char** argv) {
 
     const std::int64_t t_end = Clock::now_ns() + std::int64_t(seconds) * 1'000'000'000LL;
     const std::int64_t period = 1'000'000'000 / 60;
-    std::int64_t next_send = Clock::now_ns();
     std::uint64_t sent = 0, deltas = 0;
 
+    // Spread the first send evenly across one period. Real players are not
+    // synchronised, and a staggered generator measures the server rather than
+    // the phase it happened to start in.
+    {
+        const std::int64_t t0 = Clock::now_ns();
+        for (std::size_t i = 0; i < bots.size(); ++i)
+            bots[i].next_send = t0 + std::int64_t(i) * period / std::int64_t(bots.size());
+    }
+
+    std::int64_t soonest = 0;
     while (Clock::now_ns() < t_end) {
         const std::int64_t now = Clock::now_ns();
-        if (now >= next_send) {
-            next_send += period;
+        soonest = t_end;
+        {
             const float t = float(double(now) / 1e9);
             for (auto& b : bots) {
+                if (now < b.next_send) { if (b.next_send < soonest) soonest = b.next_send; continue; }
+                b.due_poll = true;
+                // += period, not now + period: an open-loop generator must not
+                // let its own lateness push the schedule back.
+                b.next_send += period;
                 // Circle the arena and sweep the aim across the middle, so
                 // sooner or later every bot has another in its sights.
                 // Aim at the nearest visible opponent. A blind sweep landed
@@ -167,7 +184,8 @@ int main(int argc, char** argv) {
                         const float dz = target->z - me->z;
                         const float dy = (target->y + ge::world::kTorsoHeight)
                                        - (me->y + ge::world::kEyeHeight);
-                        yaw   = std::atan2(dx, dz);          // matches the server: forward = +z rotated by yaw
+                        yaw   = std::atan2(dx, dz);
+                        // matches the server: forward = +z rotated by yaw
                         pitch = std::atan2(dy, std::sqrt(dx * dx + dz * dz));
                         // Perfect aim is what the functional test wants and the
                         // worst thing to put a human in front of: five bots at
@@ -248,6 +266,7 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 ++sent;
+                if (b.next_send < soonest) soonest = b.next_send;
             }
         }
 
@@ -258,7 +277,15 @@ int main(int argc, char** argv) {
         // below the 16.7 ms tick, so nothing is delayed by it.
         bool any_new = false;
 
+        // Poll on each bot's own send cadence, not on the loop's. Staggering
+        // the sends lifted the loop rate from 60 Hz to about 15 kHz, and this
+        // pass polls every socket, so the generator went from 15k recvfrom a
+        // second to nearly 4M and pinned its own core -- measuring itself
+        // rather than the server. A bot receives at 60 Hz, so polling it at
+        // 60 Hz is all it needs.
         for (auto& b : bots) {
+            if (!b.due_poll) continue;
+            b.due_poll = false;
             const std::size_t before = b.view.players.size();
             (void)before;
             const std::uint64_t prev_rtt  = b.view.last_rtt_ns;
@@ -281,18 +308,11 @@ int main(int argc, char** argv) {
                 ++deltas;
                 any_new = true;
             }
-            // Per-input accounting. The snapshot just received echoes the
-            // timestamp of the last input the server applied for us, so EVERY
-            // outstanding input at or before that timestamp has now been
-            // answered -- by this snapshot, at this moment. Recording a sample
-            // for each of them, rather than one sample for the snapshot, is
-            // what removes the survivorship bias: inputs whose own snapshots
-            // were dropped are charged the full wait they actually incurred
-            // instead of disappearing from the distribution.
-            //
-            // This is the coordinated-omission correction, applied at the
-            // layer where it is meaningful for a game: the player pressed a
-            // key at `ts` and first saw its effect now.
+            // Per-input accounting. The snapshot echoes the last input the
+            // server applied, so every outstanding input at or before that
+            // timestamp was answered now. Sampling each of them rather than
+            // the snapshot is what removes the survivorship bias -- inputs
+            // whose own snapshots were dropped get charged their real wait.
             if (b.view.last_echo_ts_ns && b.view.last_echo_ts_ns != b.last_echo_seen) {
                 b.last_echo_seen = b.view.last_echo_ts_ns;
                 const std::uint64_t now_ns = std::uint64_t(Clock::now_ns());
@@ -318,16 +338,10 @@ int main(int argc, char** argv) {
                     if (p.flags & ge::proto::kPlayerFired) ++b.shots_seen;
                     continue;
                 }
-                // Resource deltas, counted the same way damage is: by
-                // watching the value, not by trusting a one-tick flag that a
-                // dropped datagram would erase.
-                //
-                // Fuel needs a threshold because it also rises on its own
-                // while a bot stands still (kGroundRegenPerSec). Counting any
-                // increase reported 88 "fuel pickups" in a 20-second run,
-                // which is how this was noticed. A powerup is +55 points at
-                // once; the trickle is +0.05 per tick. Ammo has no such
-                // source, so any increase there is genuinely a pickup.
+                // Watch the value, not a one-tick flag a drop would erase.
+                // Fuel needs a threshold because it also trickles up while
+                // standing still -- counting any rise reported 88 pickups in
+                // a 20 s run. Ammo has no such source.
                 if (b.have_res) {
                     if (p.fuel >= b.last_fuel + 5) ++b.fuel_taken;
                     if (p.ammo > b.last_ammo) ++b.ammo_taken;
@@ -341,8 +355,14 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (!any_new && Clock::now_ns() + 500'000 < next_send)
-            ::usleep(200);
+        // Sleep until the next bot is due. Staggering puts a deadline every
+        // period/nbots -- about 65 us for 256 bots -- so the old 500 us
+        // threshold never fired and the generator spun a core measuring
+        // itself. Leave 50 us of slack so a wakeup is never late.
+        if (!any_new) {
+            const std::int64_t gap = soonest - Clock::now_ns() - 50'000;
+            if (gap > 0) ::usleep(useconds_t(std::min<std::int64_t>(gap / 1000, 1000)));
+        }
     }
 
     std::uint64_t hits = 0, deaths = 0, shots = 0, best_score = 0;
@@ -387,8 +407,10 @@ int main(int argc, char** argv) {
                     "\"shots_seen\":%llu,\"max_visible\":%zu,\"best_score\":%llu,"
                     "\"pickups_visible\":%zu,\"fuel_pickups\":%llu,\"ammo_pickups\":%llu,"
                     "\"dry_ticks\":%llu}\n",
-                    nbots, seconds, static_cast<unsigned long long>(sent), static_cast<unsigned long long>(deltas),
-                    ppct(0.50), ppct(0.90), ppct(0.99), rtts.size(), pct(0.50), pct(0.90), pct(0.99), pct(0.999),
+                    nbots, seconds, static_cast<unsigned long long>(sent),
+                        static_cast<unsigned long long>(deltas),
+                    ppct(0.50), ppct(0.90), ppct(0.99), rtts.size(), pct(0.50), pct(0.90),
+                        pct(0.99), pct(0.999),
                     rtts.empty() ? 0.0 : double(rtts.back()) / 1000.0,
                     rtts_per_input.size(), ipct(0.50), ipct(0.90), ipct(0.99), ipct(0.999),
                     ipct(0.9999),
@@ -404,7 +426,8 @@ int main(int argc, char** argv) {
         if (drop_pct) std::printf("\n  [injected %d%% delta loss]\n", drop_pct);
         if (send_drop_pct) std::printf("  [injected %d%% input loss]\n", send_drop_pct);
         std::printf("\nbots %d for %ds -> %llu inputs, %llu deltas\n",
-                    nbots, seconds, static_cast<unsigned long long>(sent), static_cast<unsigned long long>(deltas));
+                    nbots, seconds, static_cast<unsigned long long>(sent),
+                        static_cast<unsigned long long>(deltas));
         // This is input -> the delta that reflects it, so it necessarily
         // includes waiting for the next 60 Hz tick (0-16.7 ms, ~8 ms mean).
         // It is the number a player feels. It is NOT the transport latency --
@@ -422,7 +445,8 @@ int main(int argc, char** argv) {
                     ipct(0.50) / 1000.0, ipct(0.90) / 1000.0, ipct(0.99) / 1000.0,
                     ipct(0.999) / 1000.0, ipct(0.9999) / 1000.0,
                     rtts_per_input.empty() ? 0.0 : double(rtts_per_input.back()) / 1e6);
-        std::printf("                     (per input sent -- n=%zu, %llu never answered = %.3f%%)\n",
+        std::printf("                     (per input sent -- n=%zu, "
+                    "%llu never answered = %.3f%%)\n",
                     rtts_per_input.size(), static_cast<unsigned long long>(unanswered),
                     sent ? 100.0 * double(unanswered) / double(sent) : 0.0);
         std::printf("                     (includes up to one 60 Hz tick of quantisation)\n");

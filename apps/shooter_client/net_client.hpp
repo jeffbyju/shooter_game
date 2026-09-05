@@ -53,10 +53,8 @@ struct WorldView {
     // ago" from "the input I sent 80 ms ago whose earlier snapshots were all
     // lost", and that difference is the whole measurement.
     std::uint64_t last_echo_ts_ns = 0;
-    // Snapshots discarded for arriving out of order, and snapshots the sequence
-    // numbers say never arrived. Both are observable loss, and neither was
-    // counted anywhere before: a client that lost 30% of its traffic looked
-    // exactly like one on a clean link.
+    // Out-of-order discards, and gaps the tick numbers say never arrived.
+    // Neither was counted before, so 30% loss looked like a clean link.
     std::uint64_t stale_snapshots  = 0;
     std::uint64_t missed_snapshots = 0;
 };
@@ -126,21 +124,15 @@ public:
         proto::ShooterInput in{};
         in.client_ts_ns = std::uint64_t(core::Clock::now_ns());
         last_input_ts_  = in.client_ts_ns;
-        // Its own counter, not the frame counter. They used to be the same
-        // `seq_`, which a ping also bumped -- so with one ping and one input
-        // per tick, consecutive inputs arrived numbered 2 apart. Nothing read
-        // input_seq closely enough to notice until the server started counting
-        // sequence gaps, which then reported 49.9% input loss on a lossless
-        // loopback. The counter was right; the sequence was not.
+        // Its own counter. Sharing `seq_` with pings numbered consecutive
+        // inputs 2 apart, which the server's gap counter read as 49.9% loss on
+        // a lossless loopback. The counter was right; the sequence was not.
         in.input_seq    = ++input_seq_;
         in.move_x = move_x; in.move_z = move_z;
         in.yaw = yaw; in.pitch = pitch; in.buttons = buttons;
         const std::size_t n = proto::encode(buf, in, session_, ++seq_);
-        // Loss injection on the UPLINK, the mirror of set_drop_pct()'s downlink.
-        // The sequence number is consumed either way -- that is the point: the
-        // datagram is built, numbered, and then thrown away, which is exactly
-        // what a lossy network does and exactly what the server's gap counter
-        // has to notice.
+        // Uplink loss injection. The sequence is consumed either way: built,
+        // numbered, dropped -- which is what the gap counter has to see.
         if (send_drop_pct_ > 0) {
             rng_ = rng_ * 6364136223846793005ULL + 1442695040888963407ULL;
             if (int((rng_ >> 33) % 100) < send_drop_pct_) return true;
@@ -205,19 +197,16 @@ public:
     // sequence-gap counter reports a loss rate it was not told, rather than
     // trusting a counter because it reads zero when nothing is wrong.
     void set_send_drop_pct(int pct) noexcept { send_drop_pct_ = pct; }
-    // Every client used to seed this identically, so N bots dropped exactly the
-    // same datagrams: the aggregate loss rate was one client's draw repeated N
-    // times, not N times as many draws. The realized rate then missed its
-    // nominal by several percent and looked like a counting error.
+    // Seeded per client: identical seeds make N bots drop the same datagrams,
+    // so the aggregate is one draw repeated, not N draws.
     void set_loss_seed(std::uint64_t s) noexcept {
         rng_ = s * 0x9E3779B97F4A7C15ULL + 0xD1B54A32D192ED03ULL;
     }
 
     std::uint32_t session() const noexcept { return session_; }
     bool ready() const noexcept { return session_ != 0; }
-    // True once the hello has been retried to exhaustion with no welcome back.
-    // The caller can then say "server unreachable" instead of sitting in a
-    // loop sending inputs nobody is listening to.
+    // Retried to exhaustion with no welcome: the caller can say unreachable
+    // instead of sending inputs nobody is listening to.
     bool handshake_failed() const noexcept {
         return udp_ && session_ == 0 && hello_attempts_ >= kMaxHelloAttempts;
     }
@@ -245,14 +234,9 @@ private:
                 const proto::ShooterDeltaView d(f);
                 if (!d.valid()) break;
 
-                // Datagrams reorder. Applying a snapshot older than the one
-                // already shown rewinds every other player for one frame, which
-                // reads as a stutter and was previously invisible because the
-                // tick was recorded and never compared.
-                //
-                // Signed difference, not `<`: tick is a uint32 and wraps after
-                // 2^32 ticks. A plain comparison would discard every snapshot
-                // for the rest of the session the first time it did.
+                // Datagrams reorder, and applying an older snapshot rewinds
+                // everyone for a frame. Signed difference, not `<`: a plain
+                // compare would discard everything once the uint32 wrapped.
                 if (seen_tick_ && std::int32_t(d.header().tick - view.tick) < 0) {
                     ++view.stale_snapshots;
                     break;
@@ -297,16 +281,10 @@ private:
         }
     }
 
-    // ClientHello used to be sent exactly once. Over UDP that is a design
-    // error, not an oversight: lose that single datagram -- most likely during
-    // a join burst, which is exactly when it is most likely -- and the client
-    // never gets a session, yet goes on sending inputs forever. The server
-    // counts those in its receive rate and discards them, so the failure is
-    // invisible on both ends. Observed: 144 of 512 clients joined while the
-    // server reported a healthy `in 62458/s`.
-    //
-    // TCP does not need this (the handshake is retransmitted by the kernel), so
-    // the retry is confined to the datagram path.
+    // Sent once, over UDP, with no ack: lose it in a join burst and the client
+    // never gets a session but keeps sending inputs the server discards.
+    // Observed 144 of 512 joined while the server looked healthy. TCP
+    // retransmits its own handshake, so this is datagram-only.
     void retry_hello_if_unanswered() noexcept {
         if (!udp_ || session_ != 0 || hello_attempts_ >= kMaxHelloAttempts) return;
         const std::uint64_t now = std::uint64_t(core::Clock::now_ns());
@@ -357,9 +335,7 @@ private:
     std::uint32_t     input_seq_ = 0;   // dense per-input sequence
     std::uint64_t     last_input_ts_ = 0;
 
-    // 100 ms and 10 tries: two seconds of patience, which is longer than any
-    // plausible join burst and short enough that a genuinely dead server still
-    // fails fast. Bounded, so a client cannot hammer an unreachable address.
+    // Two seconds of patience, bounded so a client cannot hammer a dead host.
     static constexpr std::uint64_t kHelloRetryNs     = 100'000'000ULL;
     static constexpr int           kMaxHelloAttempts = 10;
     std::uint64_t     hello_next_ns_  = 0;
