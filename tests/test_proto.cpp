@@ -466,3 +466,155 @@ GE_TEST(a_worst_case_arena_delta_still_fits_one_frame) {
     CHECK_EQ(n, kMaxArenaFrameBytes);
     CHECK(n <= kMaxFrameBytes);
 }
+
+// ---------------------------------------------------------------------------
+// Mutation fuzzing of the frame reader.
+//
+// The codec casts structs in place instead of parsing field by field, so the
+// checks in FrameReader are all that stands between a hostile datagram and a
+// wild read. The hand-written malformed cases above cover what I thought of.
+// These cover what I did not: valid frames with bytes flipped, and pure random
+// input. Under ASan/UBSan an out-of-bounds read fails the run.
+//
+// Seeded, so a failure reproduces exactly.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct FuzzRng {
+    std::uint64_t s;
+    std::uint64_t next() noexcept {
+        s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+        return s;
+    }
+    std::uint32_t below(std::uint32_t n) noexcept { return std::uint32_t(next() % n); }
+};
+
+// Walks every accessor a real receiver would touch, so the fuzzer exercises
+// the tail readers and not just the header checks.
+void consume(const FrameView& f) noexcept {
+    switch (f.type()) {
+        case MsgType::ClientHello:   (void)f.as<ClientHello>();   break;
+        case MsgType::ServerWelcome: (void)f.as<ServerWelcome>(); break;
+        case MsgType::Ping:          (void)f.as<Ping>();          break;
+        case MsgType::Pong:          (void)f.as<Pong>();          break;
+        case MsgType::ShooterInput:  (void)f.as<ShooterInput>();  break;
+        case MsgType::ShooterDelta: {
+            const ShooterDeltaView d(f);
+            if (!d.valid()) break;
+            std::uint64_t acc = 0;
+            for (const PlayerRecord& r : d.players()) acc += r.id;
+            for (const PickupRecord& r : d.pickups()) acc += r.id;
+            (void)acc;
+            break;
+        }
+        case MsgType::SnakeDelta: {
+            SnakeDeltaView v(f);
+            const SnakeRecord* sr = nullptr;
+            std::span<const Point2> pts;
+            float acc = 0;
+            while (v.next(sr, pts)) for (const Point2& p : pts) acc += p.x;
+            (void)acc;
+            break;
+        }
+        default: break;
+    }
+}
+
+// Copies into a heap block sized to the input EXACTLY, then parses that.
+//
+// Parsing out of a big fixed buffer is what this did first, and it made the
+// whole exercise decoration: an over-read of a few bytes still lands inside
+// the array, so ASan sees nothing. Proven by deliberately weakening the bounds
+// check in FrameReader -- 32 other tests failed and all three fuzz tests
+// passed. With an exact-sized allocation the redzone sits immediately after
+// the last valid byte and the same sabotage is caught here.
+void drain(const std::byte* src, std::size_t n) noexcept {
+    if (n == 0) return;
+    auto* exact = static_cast<std::byte*>(::operator new(n, std::align_val_t(8)));
+    std::memcpy(exact, src, n);
+    FrameReader r({exact, n});
+    FrameView f;
+    for (int guard = 0; guard < 512; ++guard) {
+        if (r.next(f) != ParseError::Ok) break;
+        consume(f);
+    }
+    ::operator delete(exact, std::align_val_t(8));
+}
+
+} // namespace
+
+GE_TEST(proto_reader_survives_random_bytes) {
+    FuzzRng rng{0xDEADBEEFCAFEULL};
+    alignas(8) std::byte buf[2048];
+    for (int it = 0; it < 20000; ++it) {
+        const std::size_t n = (rng.below(sizeof buf) / 8) * 8;   // reader wants 8-byte alignment
+        for (std::size_t i = 0; i < n; ++i) buf[i] = std::byte(rng.next() & 0xFF);
+        drain(buf, n);
+    }
+    CHECK(true);   // the assertion is "did not crash or trip a sanitizer"
+}
+
+GE_TEST(proto_reader_survives_mutated_valid_frames) {
+    FuzzRng rng{0x1234567890ABULL};
+    alignas(8) std::byte buf[4096];
+
+    for (int it = 0; it < 20000; ++it) {
+        // Build a valid multi-frame buffer first: mutations of something that
+        // nearly parses reach far deeper than random noise does.
+        std::size_t off = 0;
+        const int frames = 1 + int(rng.below(3));
+        for (int k = 0; k < frames && off + 256 < sizeof buf; ++k) {
+            std::span<std::byte> out(buf + off, sizeof buf - off);
+            switch (rng.below(4)) {
+                case 0: off += encode(out, Ping{rng.next(), rng.next()}, 1, 1); break;
+                case 1: off += encode(out, ClientHello{rng.next(), kProtocolVersion, 0}, 0, 0); break;
+                case 2: {
+                    ShooterInput in{};
+                    in.input_seq = std::uint32_t(rng.next());
+                    in.client_ts_ns = rng.next();
+                    off += encode(out, in, 1, 1);
+                    break;
+                }
+                default: {
+                    PlayerRecord recs[8]{};
+                    PickupRecord picks[4]{};
+                    const std::uint16_t np = std::uint16_t(1 + rng.below(8));
+                    const std::uint16_t nk = std::uint16_t(rng.below(4));
+                    ShooterDeltaHeader h{};
+                    h.count = np; h.pickup_count = nk;
+                    off += encode_flat2<ShooterDeltaHeader, PlayerRecord, PickupRecord>(
+                        out, h, std::span<const PlayerRecord>(recs, np),
+                        std::span<const PickupRecord>(picks, nk), 1, 1);
+                    break;
+                }
+            }
+        }
+        if (off == 0) continue;
+
+        // One to four byte flips. Low counts keep the frame nearly valid, which
+        // is where the interesting length and count fields live.
+        const int flips = 1 + int(rng.below(4));
+        for (int k = 0; k < flips; ++k) {
+            const std::size_t at = rng.below(std::uint32_t(off));
+            buf[at] = std::byte(std::uint8_t(buf[at]) ^ (1u << rng.below(8)));
+        }
+        drain(buf, off);
+    }
+    CHECK(true);
+}
+
+GE_TEST(proto_reader_survives_truncation_at_every_offset) {
+    alignas(8) std::byte buf[1024];
+    PlayerRecord recs[6]{};
+    PickupRecord picks[3]{};
+    ShooterDeltaHeader h{};
+    h.count = 6; h.pickup_count = 3;
+    const std::size_t n = encode_flat2<ShooterDeltaHeader, PlayerRecord, PickupRecord>(
+        buf, h, std::span<const PlayerRecord>(recs, 6),
+        std::span<const PickupRecord>(picks, 3), 1, 1);
+    CHECK(n > 0);
+    // Every 8-byte prefix, including the empty one. A reader that trusts a
+    // length field over the buffer it was handed fails here.
+    for (std::size_t cut = 0; cut <= n; cut += 8) drain(buf, cut);
+    CHECK(true);
+}
