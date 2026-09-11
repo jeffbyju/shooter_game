@@ -1,6 +1,12 @@
 # ge_server
 
-A low-latency sharded multiplayer game server in C++23.
+Two low-latency multiplayer game servers in C++23, sharing one protocol,
+one codec and one set of containers.
+
+- **`ge_arena_udp`** — a first-person arena shooter over UDP, served from a
+  single core. 2048 players at a sustained 60 Hz.
+- **`ge_world_server`** — a sharded TCP server for the snake mode, acceptor
+  to I/O threads to simulation shards over lock-free rings.
 
 Built the way a trading system is built: fixed capacity everywhere, no
 allocation on the hot path, lock-free handoff between threads, and a benchmark
@@ -12,10 +18,21 @@ No third-party dependencies. CMake plus a C++23 compiler. Verified on macOS
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 build/ge_viewer                   # server + 24 bots, rendered live in the terminal
-build/ge_tests                    # 70 tests, 304k assertions
+build/ge_tests                    # 94 tests, 312k assertions
 build/ge_bench                    # component microbenchmarks
 build/ge_loadgen --clients 100    # end-to-end benchmark, server runs in-process
 ```
+
+The arena shooter needs a server and something to play against:
+
+```sh
+build/ge_arena_udp --port 9200 --world 400 --aoi 64 &
+build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 8 --seconds 60 &
+build/ge_shooter --host 127.0.0.1 --port 9200 --udp
+```
+
+WASD and mouse, space to jump, double-tap and hold space for the jetpack,
+click to fire. Cyan powerups are fuel, amber are ammo.
 
 `ge_viewer` is the quickest way in. It starts a server, connects a crowd of
 snakes, and draws one player's view of the world. Run your head into another
@@ -133,7 +150,7 @@ End to end:
 | sustained throughput | **78.7K msg/s** at p50 380 us on 2.3 cores |
 | steady-state heap allocations | **0** |
 | resident set / per connection | 11.7 MiB / 20.1 KiB |
-| tests | 70 tests, 304,252 assertions, clean under ASan+UBSan |
+| tests | 94 tests, ~312,600 assertions, clean under ASan+UBSan |
 
 Clock overhead is 13 ns and granularity 41 ns on this machine, so batches are
 sized such that neither matters. Any figure within a few multiples of 41 ns
@@ -187,10 +204,15 @@ include/ge/
   metrics/     HDR histogram, counters, process resource usage, perf counters
   server/      world server: acceptor + I/O threads + shards
   bench/       load generator, report rendering
-apps/          ge_world_server, ge_gateway, ge_loadgen, ge_viewer
+apps/          ge_world_server, ge_gateway, ge_loadgen, ge_viewer,
+               ge_arena_udp, ge_shooter, ge_shooter_bots
 bench/         component microbenchmarks
-tests/         70 tests: containers, protocol + fuzz, allocators, histogram,
-               balancer, grid, shard lifecycle, server lifecycle
+apps/arena_udp/       single-core UDP arena server
+apps/shooter_client/  SDL3 + OpenGL client, and the shared NetClient
+apps/shooter_bots/    headless clients: functional test and load generator
+tests/         94 tests: containers, protocol + mutation fuzzing, allocators,
+               histogram, balancer, grid, shard lifecycle, server lifecycle,
+               arena shard, client linear algebra
 scripts/       run_bench.sh, failover_demo.sh, make_results.py, snake_multiplayer.sh
 ```
 
@@ -203,7 +225,17 @@ build/ge_viewer
 # Multiplayer: starts a shared world and prints the command each player runs
 scripts/snake_multiplayer.sh
 
-# Standalone server
+# The arena shooter, single core over UDP
+build/ge_arena_udp --port 9200 --world 2000 --aoi 64 --max 2048
+
+# ...and the load generator that doubles as its functional test
+build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 512 --seconds 60
+
+# A/B the two optimisations that matter, from one binary
+build/ge_arena_udp --aoi-scan     # the original O(n^2) area-of-interest loop
+build/ge_arena_udp --batch 1      # one recvfrom/sendto per datagram
+
+# Standalone snake server
 build/ge_world_server --port 7777 --io-threads 2 --shards 4
 
 # Gateway across two backends
