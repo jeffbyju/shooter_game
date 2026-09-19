@@ -17,10 +17,6 @@ No third-party dependencies. CMake plus a C++23 compiler. Verified on macOS
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-build/ge_viewer                   # server + 24 bots, rendered live in the terminal
-build/ge_tests                    # 94 tests, 312k assertions
-build/ge_bench                    # component microbenchmarks
-build/ge_loadgen --clients 100    # end-to-end benchmark, server runs in-process
 ```
 
 The arena shooter needs a server and something to play against:
@@ -33,6 +29,25 @@ build/ge_shooter --host 127.0.0.1 --port 9200 --udp
 
 WASD and mouse, space to jump, double-tap and hold space for the jetpack,
 click to fire. Cyan powerups are fuel, amber are ammo.
+
+To see the measurement that mattered, on your own machine, in about a minute:
+
+```sh
+build/ge_arena_udp --port 9200 --world 2000 --aoi 64 --max 2048 &
+build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 256 --seconds 10
+```
+
+Watch `aoicand/tick` in the server's per-second line, then restart it with
+`--aoi-scan` and run the bots again. The flag restores the original O(n^2)
+area-of-interest loop, so both arms are the same binary. On a laptop that is
+808 against 65,280, and 256 x 255 = 65,280.
+
+```sh
+build/ge_tests                    # 94 tests, 312k assertions
+build/ge_bench                    # component microbenchmarks
+build/ge_loadgen --clients 100    # end-to-end benchmark, server runs in-process
+build/ge_viewer                   # the snake mode, server + 24 bots in the terminal
+```
 
 `ge_viewer` is the quickest way in. It starts a server, connects a crowd of
 snakes, and draws one player's view of the world. Run your head into another
@@ -116,8 +131,57 @@ sweep refuses to count rows where the generator was CPU-bound.
 
 ## Measurements
 
-Component costs, Apple M-series, `-O3`, best of seven batches. The allocation
-counter reads zero for every row except the two that exist to allocate.
+Two separate campaigns. The arena server was measured on Linux hardware in EC2;
+the component costs and the snake end-to-end figures come from a laptop. They
+are not comparable and are kept apart deliberately.
+
+### The arena server, one core
+
+`c7g.2xlarge` (Graviton3), one core, 2048 clients on separate instances in the
+same VPC, each client's sends spread across the tick rather than fired in
+lockstep.
+
+| | |
+|---|---|
+| players | 2048 at a sustained 60 Hz |
+| snapshot delivery | 100.00% |
+| datagrams in / out | 249,859 /s and 249,858 /s |
+| server CPU | ~99% of one core |
+| 10-minute soak | RSS flat at 4,544 KB, every error counter 0 |
+
+The CPU figure is the interesting one, because it used to read ~70%. The load
+generator was firing all 2048 clients at the same instant; bursty arrivals are
+cheaper per datagram than smooth ones because one `poll` wake amortises over
+many of them. Staggering the clients moved the identical 249,856 datagrams/s
+from 77% of a core to 99%. The earlier number is withdrawn, not revised.
+
+Of the 7,305 instructions each datagram costs, 6,091 are kernel. Simulation is
+15.2% of the core; the syscall path is what is full.
+
+Both optimisations that matter are behind runtime flags, so the A/B runs from
+one binary and a difference cannot be a build difference. Median of three runs,
+`[min-max]`:
+
+| | `--aoi-scan` | grid |
+|---|---|---|
+| AOI distance checks / tick | 4,262,127 `[+-0]` | **39,517** `[39.2-40.1k]` |
+| instructions retired | 188.44 B `[188.3-189.1]` | **91.26 B** `[91.2-91.6]` |
+| simulation CPU | 36.9% `[36.3-37.5]` | **15.2%** `[15.1-16.0]` |
+| snapshots out | 249,857 /s | 249,855 /s |
+
+2048 x 2047 = 4,192,256 is what a full scan does by definition, which is what
+the counter reads. Delivery is identical in both arms: the grid is worth 2.06x
+in instructions, not a delivery win at this load.
+
+Batching with `recvmmsg`/`sendmmsg` is worth ~10% of cycles at 2048 (49.78 B to
+44.94 B) with no change in delivery. It pays at 4096, where snapshots out go
+from 314,704 to 360,377 /s, +14.5%. The 4096 arms are generator-limited, so
+they are a fair comparison between builds and not a capacity measurement.
+
+### Component costs
+
+Apple M-series, `-O3`, best of seven batches. The allocation counter reads zero
+for every row except the two that exist to allocate.
 
 | operation | cost |
 |---|---:|
@@ -141,7 +205,7 @@ counter reads zero for every row except the two that exist to allocate.
 | spatial grid rebuild, per body point | 1.75 ns |
 | area-of-interest query, radius 64 | 6.72 ns |
 
-End to end:
+End to end, the snake path over TCP on the same laptop:
 
 | | |
 |---|---:|
@@ -264,31 +328,57 @@ scripts/failover_demo.sh
 
 ## Known limitations
 
-- **The `io_uring` path is unvalidated.** It compiles and is selectable, but it
-  defaults to off and has not been run on a machine with io_uring. Treat it as
-  untested code. Note also that io_uring is not kernel bypass: the kernel TCP
-  stack is still in the path.
-- **No Linux performance run.** Correctness is verified on Linux with GCC 13,
-  and thread pinning works there via `sched_setaffinity`, but every committed
-  performance figure was collected on macOS with pinning unavailable. The
-  numbers above are therefore unpinned and platform-specific.
-- **Tail latencies need an idle machine.** See the caveat above; the committed
-  run's p99 and beyond describe the machine rather than the server.
-- **Loopback only.** There is no NIC, driver, switch or packet loss in any
-  measurement. Loopback removes roughly the most interesting 10 to 50 us of a
-  real deployment's latency budget.
-- **No soak testing.** Runs are seconds, not hours. Nothing here would catch a
-  slow leak; the fixed-capacity design is an argument against one rather than
-  evidence.
-- **Single host.** The gateway and backends are separate processes but share a
-  machine, so none of the distribution is over a real network.
+Scoped by campaign, because two of these used to be stated as if they applied
+to everything.
+
+The arena server:
+
+- **No client prediction, interpolation or lag compensation.** All three are
+  standard in shipped games. Their absence is what makes the latency numbers
+  honest, and it is also why it feels worse than a commercial title.
+  Interpolation is the largest available quality win and is client-only.
+- **No authentication, encryption or anti-cheat.** The server trusts everything
+  it is told except movement speed. Do not call it production-ready.
+- **Single region, single instance type, one core.** No failover, no
+  persistence. Nothing survives a restart.
+- **No kernel bypass and no busy-poll.** No `SO_BUSY_POLL`, no AF_XDP, no DPDK.
+  Given that 83% of the per-datagram cost is kernel, this is where the next win
+  is, and it has not been done.
+- **Branch misses doubled** at 2048 after the area-of-interest fix, 28.1 M to
+  58.2 M. Hash probing and grid-cell iteration replacing a perfectly predicted
+  linear scan is the plausible explanation. It is unverified, so it is not
+  asserted.
+- **LAN only.** Bots and server share a VPC. This measures the stack, not the
+  internet.
+
+The snake path and the component figures:
+
+- **Laptop, unpinned, and the machine was contended.** See the caveat above the
+  end-to-end table. p50 and the component microbenchmarks hold; p99 and beyond
+  describe the machine.
+- **Loopback.** No NIC, driver or switch in any of those numbers.
+- **The `io_uring` path is unvalidated.** It compiles and is selectable but
+  defaults to off and has never been run on a machine with io_uring. Note also
+  that io_uring is not kernel bypass; the kernel TCP stack is still in the path.
+
+Throughout:
+
+- **Endianness is not handled.** Little-endian is assumed everywhere.
+- **The gateway does not front the UDP path.**
+- **Fuzzing is mutation-based, not coverage-guided**, and no sanitizers run in
+  CI.
+- **`include/ge/container/slot_map.hpp` is dead code with a test suite.**
 
 ## Next steps
 
-- Validate the `io_uring` backend on a Linux box and benchmark it against epoll
-- Collect a publishable run on an idle, pinned Linux machine and replace the
-  macOS figures
-- Measure across two hosts over a real NIC to get a realistic latency budget
-- Extend the soak duration far enough to say something about leaks
+- Cut syscalls, since that is where 83% of the per-datagram cost is: a
+  `SO_REUSEPORT` receive thread per core first, then busy-poll, then AF_XDP
+- Snapshot interpolation on the client, which is the biggest felt-quality gain
+  available and is roughly 80 lines
+- Re-collect the snake and component figures on idle, pinned Linux so the two
+  campaigns stop being incomparable
+- Validate the `io_uring` backend on a box that has it and benchmark it against
+  epoll
 - Spatial rather than session-hash sharding, so interacting entities share a
-  shard and cross-shard queries become rare
+  shard -- worth doing only once the syscall path stops being the bottleneck,
+  since simulation is currently 15% of a core
