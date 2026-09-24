@@ -1,0 +1,2 @@
+[ perf record: Woken up 2 times to write data ]
+[ perf record: Captured and wrote 0.350 MB /home/ec2-user/out/grid.data (9096 samples) ]

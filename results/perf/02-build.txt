@@ -1,0 +1,63 @@
+[  5%] Building CXX object CMakeFiles/ge_core.dir/src/core/util.cpp.o
+[  7%] Building CXX object CMakeFiles/ge_core.dir/src/alloc/probe.cpp.o
+[  7%] Building CXX object CMakeFiles/ge_core.dir/src/core/topology.cpp.o
+[ 10%] Building CXX object CMakeFiles/ge_core.dir/src/metrics/process.cpp.o
+[ 15%] Building CXX object CMakeFiles/ge_core.dir/src/metrics/perf_counters.cpp.o
+[ 15%] Building CXX object CMakeFiles/ge_core.dir/src/net/socket.cpp.o
+[ 17%] Building CXX object CMakeFiles/ge_core.dir/src/net/reactor.cpp.o
+[ 20%] Building CXX object CMakeFiles/ge_core.dir/src/net/uring.cpp.o
+[ 23%] Building CXX object CMakeFiles/ge_core.dir/src/net/connection.cpp.o
+[ 25%] Building CXX object CMakeFiles/ge_core.dir/src/world/shard.cpp.o
+[ 28%] Building CXX object CMakeFiles/ge_core.dir/src/lb/balancer.cpp.o
+[ 30%] Building CXX object CMakeFiles/ge_core.dir/src/server/world_server.cpp.o
+[ 33%] Building CXX object CMakeFiles/ge_core.dir/src/bench/loadgen.cpp.o
+[ 35%] Building CXX object CMakeFiles/ge_core.dir/src/bench/report.cpp.o
+[ 38%] Linking CXX static library libge_core.a
+[ 38%] Built target ge_core
+[ 53%] Building CXX object CMakeFiles/ge_bench.dir/bench/bench_main.cpp.o
+[ 53%] Building CXX object CMakeFiles/ge_gateway.dir/apps/gateway/main.cpp.o
+[ 53%] Building CXX object CMakeFiles/ge_loadgen.dir/apps/loadgen/main.cpp.o
+[ 53%] Building CXX object CMakeFiles/ge_viewer.dir/apps/viewer/main.cpp.o
+[ 53%] Building CXX object CMakeFiles/ge_world_server.dir/apps/world_server/main.cpp.o
+[ 53%] Building CXX object CMakeFiles/ge_arena_udp.dir/apps/arena_udp/main.cpp.o
+[ 58%] Building CXX object CMakeFiles/ge_shooter_bots.dir/apps/shooter_bots/main.cpp.o
+[ 58%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_main.cpp.o
+[ 61%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_containers.cpp.o
+[ 64%] Linking CXX executable ge_shooter_bots
+[ 64%] Built target ge_shooter_bots
+[ 66%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_proto.cpp.o
+[ 69%] Linking CXX executable ge_loadgen
+[ 71%] Linking CXX executable ge_world_server
+[ 71%] Built target ge_loadgen
+[ 74%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_alloc.cpp.o
+[ 74%] Built target ge_world_server
+[ 76%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_histogram.cpp.o
+/home/ec2-user/ge/tests/test_proto.cpp: In instantiation of ‘proto_visit_dispatches_to_the_right_type()::<lambda(const auto:12&, auto:13 ...)> [with auto:12 = ge::proto::ShooterDeltaHeader; auto:13 = {ge::proto::FrameView}]’:
+/home/ec2-user/ge/include/ge/proto/codec.hpp:198:14:   required from ‘ge::proto::visit<proto_visit_dispatches_to_the_right_type()::<lambda(const auto:12&, auto:13 ...)>&>(const FrameView&, proto_visit_dispatches_to_the_right_type()::<lambda(const auto:12&, auto:13 ...)>&)::<lambda(auto:9*)> [with auto:9 = ge::proto::ShooterDeltaHeader]’
+  198 |             h(*m, f);                       // nested tails need the frame, not a span
+      |             ~^~~~~~~
+/home/ec2-user/ge/include/ge/proto/codec.hpp:215:42:   required from ‘void ge::proto::visit(const FrameView&, H&&) [with H = proto_visit_dispatches_to_the_right_type()::<lambda(const auto:12&, auto:13 ...)>&]’
+  215 |         case MsgType::ShooterDelta:  call(static_cast<ShooterDeltaHeader*>(nullptr)); break;
+      |                                      ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/ec2-user/ge/tests/test_proto.cpp:335:22:   required from here
+  335 |     r1.next(f); visit(f, handler);
+      |                 ~~~~~^~~~~~~~~~~~
+/home/ec2-user/ge/tests/test_proto.cpp:321:45: warning: unused parameter ‘tail#0’ [-Wunused-parameter]
+  321 |     auto handler = [&](const auto& msg, auto... tail) {
+      |                                         ~~~~^~~~~~~~
+[ 79%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_balancer.cpp.o
+[ 82%] Linking CXX executable ge_viewer
+[ 84%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_world.cpp.o
+[ 84%] Built target ge_viewer
+[ 87%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_server.cpp.o
+[ 89%] Linking CXX executable ge_arena_udp
+[ 89%] Built target ge_arena_udp
+[ 92%] Building CXX object CMakeFiles/ge_tests.dir/tests/test_gl_math.cpp.o
+[ 94%] Linking CXX executable ge_gateway
+cc1plus: note: unrecognized command-line option ‘-Wno-gnu-zero-variadic-macro-arguments’ may have been intended to silence earlier diagnostics
+[ 94%] Built target ge_gateway
+[ 97%] Linking CXX executable ge_bench
+[ 97%] Built target ge_bench
+[100%] Linking CXX executable ge_tests
+[100%] Built target ge_tests
+BUILD_RC=0

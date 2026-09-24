@@ -173,6 +173,20 @@ one binary and a difference cannot be a build difference. Median of three runs,
 the counter reads. Delivery is identical in both arms: the grid is worth 2.06x
 in instructions, not a delivery win at this load.
 
+The loop is also visible in a profile, but only if you ask the right way.
+Grouped by function, the whole server is one `main` box worth 16.89% and the
+loop cannot be named at all, because inlining deleted its stack frame. The same
+recording grouped by source line:
+
+| | `--aoi-scan` | grid |
+|---|---|---|
+| `main.cpp:611-618`, the AOI loop | **10.57%** | **0.00%** |
+| all user-space samples | 16.84% | 7.18% |
+| `main` in the symbol view | 16.89% | 6.73% |
+
+Two thirds of all user-space time on four lines, invisible in the default view.
+Raw reports, run script and environment are in [`results/perf/`](results/perf/).
+
 Batching with `recvmmsg`/`sendmmsg` is worth ~10% of cycles at 2048 (49.78 B to
 44.94 B) with no change in delivery. It pays at 4096, where snapshots out go
 from 314,704 to 360,377 /s, +14.5%. The 4096 arms are generator-limited, so
