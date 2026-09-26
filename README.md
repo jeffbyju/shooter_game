@@ -192,6 +192,49 @@ Batching with `recvmmsg`/`sendmmsg` is worth ~10% of cycles at 2048 (49.78 B to
 from 314,704 to 360,377 /s, +14.5%. The 4096 arms are generator-limited, so
 they are a fair comparison between builds and not a capacity measurement.
 
+### Where one core stops
+
+The 2048 figure came from a single load generator, which left the obvious
+question open: server's limit, or generator's? Three separate generator
+instances, each with its own NIC, and generator idle recorded in every cell:
+
+| clients | in /s | out /s | delivery | p99 | server CPU | gen idle |
+|---|---|---|---|---|---|---|
+| 2048 | 249,611 | 249,611 | 96.8% | 33 ms | 65% | 47.0% |
+| 3072 | 374,739 | 374,762 | 88.5% | 50 ms | 87% | 45.6% |
+| 4096 | 493,436 | 452,605 | 79.8% | 83 ms | ~100% | 44.0% |
+| 5120 | 609,566 | 448,088 | 45.5% | 133 ms | ~100% | 44.7% |
+| 6144 | 698,925 | 452,599 | 25.8% | 217 ms | ~100% | 44.3% |
+
+Generator idle never falls below 44%, so no cell is generator-limited. **Output
+saturates at ~452,600 datagrams/s.** Through 3072 the server sends everything
+it receives; past that, input climbs to 699k/s while output stays pinned.
+
+Degradation is graceful rather than a collapse. At 6144 clients all of them
+still join, no frame is malformed, no send fails, no sequence gap is recorded.
+The server sheds snapshot delivery and tail latency, not service.
+[`results/scale/`](results/scale/).
+
+### Over the real internet
+
+256 bots from each of three origins against one server in us-east-2:
+
+| origin | delivery | RTT p50 | inputs unanswered |
+|---|---|---|---|
+| us-east-2, same VPC | 99.5% | 16.7 ms | 0.02% |
+| us-west-2 | 99.2% | 66.7 ms | 0.07% |
+| eu-west-1 | 99.5% | 83.3 ms | 0.11% |
+
+`bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0` for the whole run.
+The retry, the idempotent re-welcome and the stale-snapshot guard were written
+for loss and reordering a loopback cannot produce; this is the first run that
+put real ones in front of them. [`results/geo/`](results/geo/).
+
+RTT here is quantised to one 60 Hz tick, because a bot polls its socket on its
+own send cadence. True round trips are nearer 50 ms and 75 ms. The instrument
+separates continents; it does not measure a network RTT, and every earlier
+"LAN p50 16.7 ms" was tick quantisation rather than the wire.
+
 ### Component costs
 
 Apple M-series, `-O3`, best of seven batches. The allocation counter reads zero
@@ -353,8 +396,9 @@ The arena server:
   Interpolation is the largest available quality win and is client-only.
 - **No authentication, encryption or anti-cheat.** The server trusts everything
   it is told except movement speed. Do not call it production-ready.
-- **Single region, single instance type, one core.** No failover, no
-  persistence. Nothing survives a restart.
+- **One server process, one core, one region.** Clients have been driven from
+  three regions, but there is still a single server: no failover, no
+  persistence, no routing. Nothing survives a restart.
 - **No kernel bypass and no busy-poll.** No `SO_BUSY_POLL`, no AF_XDP, no DPDK.
   Given that 83% of the per-datagram cost is kernel, this is where the next win
   is, and it has not been done.
@@ -362,8 +406,12 @@ The arena server:
   58.2 M. Hash probing and grid-cell iteration replacing a perfectly predicted
   linear scan is the plausible explanation. It is unverified, so it is not
   asserted.
-- **LAN only.** Bots and server share a VPC. This measures the stack, not the
-  internet.
+- **Latency is quantised to one tick.** A bot reads its socket on its own
+  60 Hz cadence, so no RTT finer than 16.67 ms can be resolved. Good enough to
+  separate continents, not good enough to quote a network RTT.
+- **Capacity and geography were measured separately.** The ceiling run is
+  single-region; the cross-region run is well inside the ceiling. Nothing here
+  measures a loaded server with distant clients.
 
 The snake path and the component figures:
 
