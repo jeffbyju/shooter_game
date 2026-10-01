@@ -13,6 +13,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <thread>
+#include <memory>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -211,6 +214,11 @@ struct Peer {
     std::uint32_t last_seq   = 0;
     bool          has_seq    = false;
     bool          used       = false;
+    // Which receive thread's socket this peer's datagrams land on. SO_REUSEPORT
+    // hashes the 4-tuple to a socket, and the socket set never changes after
+    // startup, so a peer is bound to one thread for its whole session. That is
+    // what makes the send phase lock-free: only the owner touches this entity.
+    std::uint16_t owner      = 0;
 };
 
 // (address, port) -> peer slot, open addressed with linear probing. Replaces a
@@ -272,6 +280,46 @@ private:
     std::size_t cap_ = 0, mask_ = 0;
 };
 
+// A tick barrier built on one atomic, so the handoff between phases is visible
+// to a reader and to ThreadSanitizer. libc++'s std::barrier is correct but its
+// internals are opaque to TSan, which reported every plain variable crossing a
+// phase as a race. Release on arrival, acquire on departure: everything written
+// before a thread arrives is visible to every thread that leaves.
+class TickBarrier {
+public:
+    explicit TickBarrier(int n) : n_(unsigned(n)) {}
+
+    void wait() {
+        const unsigned gen = gen_.load(std::memory_order_acquire);
+        if (count_.fetch_add(1, std::memory_order_acq_rel) + 1 == n_) {
+            count_.store(0, std::memory_order_relaxed);
+            gen_.store(gen + 1, std::memory_order_release);
+            return;
+        }
+        // Spin briefly -- the other threads are microseconds behind -- then
+        // yield, so the simulation phase does not burn N-1 cores waiting.
+        for (int spins = 0; gen_.load(std::memory_order_acquire) == gen; ++spins)
+            if (spins > 256) std::this_thread::yield();
+    }
+
+private:
+    const unsigned        n_;
+    std::atomic<unsigned> count_{0};
+    std::atomic<unsigned> gen_{0};
+};
+
+// Joins parked by a receive thread for thread 0 to apply. A join mutates the
+// arena and the peer table, which every other thread is reading, so it cannot
+// happen during the drain phase.
+struct PendingJoins {
+    static constexpr std::size_t cap = 4096;
+    sockaddr_in   addr[cap]{};
+    std::uint16_t owner[cap]{};
+    std::size_t   size = 0;
+    void add(const sockaddr_in& a, std::uint16_t o) { addr[size] = a; owner[size] = o; ++size; }
+    void clear() { size = 0; }
+};
+
 struct Stats {
     std::uint64_t datagrams_in = 0, datagrams_out = 0, bad = 0;
     std::uint64_t joins = 0, inputs = 0, pings = 0, send_fail = 0;
@@ -324,6 +372,7 @@ int main(int argc, char** argv) {
     bool quiet = false;
     int  batch_size = GE_HAVE_MMSG ? 64 : 1;
     bool aoi_scan   = false;
+    int  rx_threads = 1;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* {
@@ -339,6 +388,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--pickups")) n_pickups = std::atoi(next());
         else if (!std::strcmp(argv[i], "--aoi-scan")) aoi_scan = true;
         else if (!std::strcmp(argv[i], "--batch")) batch_size = std::atoi(next());
+        else if (!std::strcmp(argv[i], "--rx-threads")) rx_threads = std::atoi(next());
         else if (!std::strcmp(argv[i], "--quiet"))   quiet = true;
         else { usage(argv[0]); return 2; }
     }
@@ -352,13 +402,21 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
 
-    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) { std::perror("socket"); return 1; }
-    int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    int bufsz = 4 << 20;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof bufsz);
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof bufsz);
+    if (rx_threads < 1) rx_threads = 1;
+#if !defined(__linux__)
+    // The split depends on the kernel hashing each datagram's 4-tuple to a
+    // fixed socket, so a peer always lands on the same thread and owns its
+    // entity exclusively. Linux does that. macOS accepts SO_REUSEPORT and then
+    // hands consecutive datagrams from one peer to different sockets, which
+    // makes two threads write the same Peer -- caught by ThreadSanitizer, and
+    // a correctness bug rather than a slowdown. Refuse instead of pretending.
+    if (rx_threads > 1) {
+        std::fprintf(stderr,
+                     "--rx-threads > 1 needs Linux: SO_REUSEPORT only load balances\n"
+                     "UDP by 4-tuple hash there, and the design relies on it.\n");
+        return 2;
+    }
+#endif
 
     sockaddr_in me{};
     me.sin_family = AF_INET;
@@ -366,9 +424,33 @@ int main(int argc, char** argv) {
     if (::inet_pton(AF_INET, host, &me.sin_addr) != 1) {
         std::fprintf(stderr, "bad --host %s\n", host); return 1;
     }
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&me), sizeof me) != 0) {
-        std::perror("bind"); return 1;
+
+    // One socket per receive thread, all bound to the same port. The kernel
+    // hashes each datagram's 4-tuple to one of them, so a peer always lands on
+    // the same socket and therefore the same thread. With one thread this is a
+    // single socket and the old path exactly.
+    std::vector<int> fds(std::size_t(rx_threads), -1);
+    for (int t = 0; t < rx_threads; ++t) {
+        const int s_ = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (s_ < 0) { std::perror("socket"); return 1; }
+        int one = 1;
+        ::setsockopt(s_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+#ifdef SO_REUSEPORT
+        // Must be set before bind, or the second bind fails with EADDRINUSE.
+        if (::setsockopt(s_, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one) != 0 &&
+            rx_threads > 1) {
+            std::perror("setsockopt(SO_REUSEPORT)"); return 1;
+        }
+#endif
+        int bufsz = 4 << 20;
+        ::setsockopt(s_, SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof bufsz);
+        ::setsockopt(s_, SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof bufsz);
+        if (::bind(s_, reinterpret_cast<sockaddr*>(&me), sizeof me) != 0) {
+            std::perror("bind"); return 1;
+        }
+        fds[std::size_t(t)] = s_;
     }
+    const int fd = fds[0];
 
     world::ArenaStore arena;
     arena.reserve(std::size_t(max_players));
@@ -396,7 +478,6 @@ int main(int argc, char** argv) {
     const std::uint64_t pickup_respawn_ticks =
         std::uint64_t(world::kPickupRespawnSec) * std::uint64_t(tick_hz);
 
-    Stats st;
     std::uint32_t next_session = 1, next_id = 1;
     const float dt = 1.0f / float(tick_hz);
     const std::int64_t period_ns = 1'000'000'000LL / tick_hz;
@@ -404,15 +485,6 @@ int main(int argc, char** argv) {
     std::uint64_t tick = 0;
     std::int64_t last_report = Clock::now_ns();
     std::uint64_t last_report_tick = 0;
-
-    // Receive and send staging, sized once. Nothing below allocates.
-    RxBatch rx; rx.configure(batch_size);
-    TxBatch tx; tx.configure(batch_size);
-    // Scratch for the small replies (welcome, pong) that are answered inline
-    // rather than batched: they are rare next to snapshots, and keeping them
-    // off the batch avoids interleaving a reply into the middle of a tick's
-    // snapshot flush.
-    alignas(8) std::byte sbuf[proto::kMaxFrameBytes];
 
     std::printf("ge_arena_udp on %s:%u -- %d Hz, world %.0f, aoi %.0f, max %d players\n",
                 host, port, tick_hz, double(world_size), double(aoi), max_players);
@@ -424,315 +496,411 @@ int main(int argc, char** argv) {
         return peer_table.find(a);
     };
 
-    while (!g_stop) {
-        // ---- 1. drain the socket -------------------------------------------
-        // Every datagram is exactly one frame. There is no reassembly, no
-        // partial-frame state, and no per-peer receive buffer -- which is the
-        // simplification that makes a bypass transport a drop-in here.
+    // Named, for the same most-vexing-parse reason as the peer capacity above.
+    const std::size_t nthreads = std::size_t(rx_threads);
+    std::vector<Stats> stats(nthreads);
+    std::vector<std::unique_ptr<PendingJoins>> pending(nthreads);
+    for (auto& q : pending) q = std::make_unique<PendingJoins>();
+
+    TickBarrier sync(rx_threads);
+    std::atomic<bool> stop_all{false};
+
+    auto worker = [&](const int tid) {
+        const int myfd = fds[std::size_t(tid)];
+        Stats& st = stats[std::size_t(tid)];
+        PendingJoins& pend = *pending[std::size_t(tid)];
+        RxBatch rx; rx.configure(batch_size);
+        TxBatch tx; tx.configure(batch_size);
+        alignas(8) std::byte sbuf[proto::kMaxFrameBytes];
+
         for (;;) {
-            const int got = rx.recv(fd);
-            if (got <= 0) break;
-            st.datagrams_in += std::uint64_t(got);
-            st.rx_syscalls  += 1;
-            st.rx_batched   += std::uint64_t(got);
+            // ---- 1. drain until the tick deadline ---------------------------
+            // Merged with the old wait phase: a thread that stopped early would
+            // desynchronise the barrier, so every thread drains and polls until
+            // the same deadline and they arrive together.
+            for (;;) {
+                // ---- 1. drain the socket -------------------------------------------
+                // Every datagram is exactly one frame. There is no reassembly, no
+                // partial-frame state, and no per-peer receive buffer -- which is the
+                // simplification that makes a bypass transport a drop-in here.
+                for (;;) {
+                    const int got = rx.recv(myfd);
+                    if (got <= 0) break;
+                    st.datagrams_in += std::uint64_t(got);
+                    st.rx_syscalls  += 1;
+                    st.rx_batched   += std::uint64_t(got);
 
-          for (int bi = 0; bi < got; ++bi) {
-            sockaddr_in     from = rx.addr(bi);
-            const socklen_t flen = sizeof from;
+                  for (int bi = 0; bi < got; ++bi) {
+                    sockaddr_in     from = rx.addr(bi);
+                    const socklen_t flen = sizeof from;
 
-            proto::FrameReader reader({rx.data(bi), rx.size(bi)});
-            proto::FrameView f;
-            if (reader.next(f) != proto::ParseError::Ok) { ++st.bad; continue; }
+                    proto::FrameReader reader({rx.data(bi), rx.size(bi)});
+                    proto::FrameView f;
+                    if (reader.next(f) != proto::ParseError::Ok) { ++st.bad; continue; }
 
-            const std::uint32_t pi = find_peer(from);
-            const std::int64_t now = Clock::now_ns();
+                    const std::uint32_t pi = find_peer(from);
+                    const std::int64_t now = Clock::now_ns();
 
-            switch (f.type()) {
-                case proto::MsgType::ClientHello: {
-                    // A hello from a known peer is a retry, not a duplicate:
-                    // our welcome was lost. Dropping it left the client
-                    // sessionless forever, still sending inputs we discarded.
-                    // Join is idempotent, so just answer again.
-                    if (pi != 0xffffffffu) {
-                        const Peer& ex = peers[pi];
-                        const proto::ServerWelcome rw{ge::core::mix64(ex.session),
-                                                      ex.session, world_size, aoi, 0, 1,
-                                                      std::uint16_t(tick_hz), 0, 0};
-                        const std::size_t rlen =
-                            proto::encode(sbuf, rw, ex.session, 0,
-                                          std::uint8_t(proto::FrameFlags::ServerSent));
-                        if (::sendto(fd, sbuf, rlen, 0,
-                                     reinterpret_cast<sockaddr*>(&from), flen) < 0)
-                            ++st.send_fail;
-                        else { ++st.datagrams_out; ++st.rewelcomes; }
-                        break;
+                    switch (f.type()) {
+                        case proto::MsgType::ClientHello: {
+                            // A hello from a known peer is a retry, not a duplicate:
+                            // our welcome was lost. Dropping it left the client
+                            // sessionless forever, still sending inputs we discarded.
+                            // Join is idempotent, so just answer again.
+                            if (pi != 0xffffffffu) {
+                                const Peer& ex = peers[pi];
+                                const proto::ServerWelcome rw{ge::core::mix64(ex.session),
+                                                              ex.session, world_size, aoi, 0, 1,
+                                                              std::uint16_t(tick_hz), 0, 0};
+                                const std::size_t rlen =
+                                    proto::encode(sbuf, rw, ex.session, 0,
+                                                  std::uint8_t(proto::FrameFlags::ServerSent));
+                                if (::sendto(myfd, sbuf, rlen, 0,
+                                             reinterpret_cast<sockaddr*>(&from), flen) < 0)
+                                    ++st.send_fail;
+                                else { ++st.datagrams_out; ++st.rewelcomes; }
+                                break;
+                            }
+                            // A join mutates the arena and the peer table, which every
+                            // other receive thread is reading. Queue it and let thread 0
+                            // apply it between the barriers, where nothing else runs.
+                            if (pend.size < pend.cap) pend.add(from, std::uint16_t(tid));
+                            break;
+                        }
+                        case proto::MsgType::Ping: {
+                            // Answered inline, exactly as the TCP server answers it on
+                            // the I/O thread: a ping must never enter the simulation or
+                            // it measures tick quantisation instead of the transport.
+                            const auto* p = f.as<proto::Ping>();
+                            if (!p) break;
+                            ++st.pings;
+                            const proto::Pong pong{p->client_ts_ns, p->cookie,
+                                                   std::uint64_t(now)};
+                            const std::size_t len = proto::encode(sbuf, pong,
+                                                pi == 0xffffffffu ? 0 : peers[pi].session, 0,
+                                                std::uint8_t(proto::FrameFlags::ServerSent));
+                            if (::sendto(myfd, sbuf, len, 0, reinterpret_cast<sockaddr*>(&from),
+                                         flen) < 0) ++st.send_fail;
+                            else ++st.datagrams_out;
+                            break;
+                        }
+                        case proto::MsgType::ShooterInput: {
+                            if (pi == 0xffffffffu) { ++st.no_session; break; }
+                            const auto* in = f.as<proto::ShooterInput>();
+                            if (!in) break;
+                            ++st.inputs;
+                            peers[pi].last_seen = now;
+
+                            // Signed difference: a wrap must not read as two billion
+                            // lost, and a negative advance is reordering, not loss.
+                            if (peers[pi].has_seq) {
+                                const std::int32_t adv =
+                                    std::int32_t(in->input_seq - peers[pi].last_seq);
+                                if (adv > 1) st.input_gaps += std::uint64_t(adv - 1);
+                            }
+                            if (!peers[pi].has_seq ||
+                                std::int32_t(in->input_seq - peers[pi].last_seq) > 0) {
+                                peers[pi].last_seq = in->input_seq;
+                                peers[pi].has_seq  = true;
+                            }
+                            // The slot is carried on the peer and fixed up when a
+                            // removal moves an entity, so this is a direct index. The
+                            // session is still checked, because a stale slot would
+                            // otherwise apply one client's input to another's player.
+                            const std::uint32_t k = peers[pi].arena_slot;
+                            if (k < arena.size() && arena.link(k).session == peers[pi].session)
+                                arena.set_input(k, in->move_x, in->move_z, in->yaw,
+                                                in->pitch, in->buttons, in->input_seq,
+                                                in->client_ts_ns);
+                            break;
+                        }
+                        default: break;
                     }
-                    if (arena.size() >= std::size_t(max_players)) break;
-                    if (free_slots.empty()) break;
-                    const std::uint32_t slot = free_slots.back();
-                    free_slots.pop_back();
-
-                    const std::uint32_t session = next_session++;
-                    const float margin = 4.0f, span = world_size - 2.0f * margin;
-                    const float sx = margin + float(rng.next_double()) * span;
-                    const float sz = margin + float(rng.next_double()) * span;
-                    const auto idx = arena.add(next_id++, sx, sz,
-                                               world::ClientLink{session, slot, 0, 0});
-                    peers[slot] = Peer{from, session, now, idx, 0, false, true};
-                    peer_table.insert(from, slot);
-                    ++st.joins;
-
-                    const proto::ServerWelcome w{ge::core::mix64(session), session,
-                                                 world_size, aoi, 0, 1,
-                                                 std::uint16_t(tick_hz), 0, 0};
-                    const std::size_t len = proto::encode(sbuf, w, session, 0,
-                                        std::uint8_t(proto::FrameFlags::ServerSent));
-                    if (::sendto(fd, sbuf, len, 0, reinterpret_cast<sockaddr*>(&from),
-                                 flen) < 0) ++st.send_fail;
-                    else ++st.datagrams_out;
-                    break;
+                  }  // for bi: one datagram of the batch
+                  // A short read means the socket is drained; a full one means there
+                  // may be more waiting, so go round again.
+                  if (got < rx.batch()) break;
                 }
-                case proto::MsgType::Ping: {
-                    // Answered inline, exactly as the TCP server answers it on
-                    // the I/O thread: a ping must never enter the simulation or
-                    // it measures tick quantisation instead of the transport.
-                    const auto* p = f.as<proto::Ping>();
-                    if (!p) break;
-                    ++st.pings;
-                    const proto::Pong pong{p->client_ts_ns, p->cookie,
-                                           std::uint64_t(now)};
-                    const std::size_t len = proto::encode(sbuf, pong,
-                                        pi == 0xffffffffu ? 0 : peers[pi].session, 0,
-                                        std::uint8_t(proto::FrameFlags::ServerSent));
-                    if (::sendto(fd, sbuf, len, 0, reinterpret_cast<sockaddr*>(&from),
-                                 flen) < 0) ++st.send_fail;
-                    else ++st.datagrams_out;
-                    break;
-                }
-                case proto::MsgType::ShooterInput: {
-                    if (pi == 0xffffffffu) { ++st.no_session; break; }
-                    const auto* in = f.as<proto::ShooterInput>();
-                    if (!in) break;
-                    ++st.inputs;
-                    peers[pi].last_seen = now;
 
-                    // Signed difference: a wrap must not read as two billion
-                    // lost, and a negative advance is reordering, not loss.
-                    if (peers[pi].has_seq) {
-                        const std::int32_t adv =
-                            std::int32_t(in->input_seq - peers[pi].last_seq);
-                        if (adv > 1) st.input_gaps += std::uint64_t(adv - 1);
-                    }
-                    if (!peers[pi].has_seq ||
-                        std::int32_t(in->input_seq - peers[pi].last_seq) > 0) {
-                        peers[pi].last_seq = in->input_seq;
-                        peers[pi].has_seq  = true;
-                    }
-                    // The slot is carried on the peer and fixed up when a
-                    // removal moves an entity, so this is a direct index. The
-                    // session is still checked, because a stale slot would
-                    // otherwise apply one client's input to another's player.
-                    const std::uint32_t k = peers[pi].arena_slot;
-                    if (k < arena.size() && arena.link(k).session == peers[pi].session)
-                        arena.set_input(k, in->move_x, in->move_z, in->yaw,
-                                        in->pitch, in->buttons, in->input_seq,
-                                        in->client_ts_ns);
-                    break;
-                }
-                default: break;
+                const std::int64_t now2 = Clock::now_ns();
+                if (now2 >= next_tick) break;
+                pollfd pfd{myfd, POLLIN, 0};
+                ::poll(&pfd, 1, int((next_tick - now2) / 1'000'000));
+                if (Clock::now_ns() >= next_tick) break;
             }
-          }  // for bi: one datagram of the batch
-          // A short read means the socket is drained; a full one means there
-          // may be more waiting, so go round again.
-          if (got < rx.batch()) break;
-        }
 
-        // ---- 2. wait for the next tick, or for a datagram --------------------
-        // Block rather than spin. `if (now < next_tick) continue;` polls flat
-        // out between ticks and pins a core -- on a 2-vCPU box that starved the
-        // server and measured 64 ms of ping against a 36 ms link.
-        std::int64_t now = Clock::now_ns();
-        if (now < next_tick) {
-            const std::int64_t left_ns = next_tick - now;
-            pollfd pfd{fd, POLLIN, 0};
-            ::poll(&pfd, 1, int(left_ns / 1'000'000));
-            now = Clock::now_ns();
-            if (now < next_tick) continue;   // woken by a datagram: go drain it
-        }
-        next_tick += period_ns;
-        if (now - next_tick > period_ns * 4) next_tick = now + period_ns;  // fell behind: resync
+            sync.wait();
 
-        arena.clear_tick_flags();
-        for (std::uint32_t i = 0; i < arena.size(); ++i)
-            if (arena.due_respawn(i, tick)) {
-                const float margin = 4.0f, span = world_size - 2.0f * margin;
-                arena.spawn(i, margin + float(rng.next_double()) * span,
-                               margin + float(rng.next_double()) * span);
-            }
-        arena.step(dt, world_size);
-        for (std::uint32_t i = 0; i < arena.size(); ++i) {
-            if (!arena.wants_fire(i)) continue;
-            arena.consume_shot(i);
-            const world::HitResult h = arena.hitscan(i);
-            if (h.hit && arena.damage(h.victim, world::kHitDamage, tick, 180))
-                arena.add_score(i);
-        }
-        // Powerups after movement, so walking onto one is collected on the
-        // tick you reach it rather than the tick after.
-        pickups.update(tick, world_size, rng);
-        arena.collect_pickups(pickups, tick, pickup_respawn_ticks);
+            // ---- 2. one thread owns the world ------------------------------
+            if (tid == 0) {
+                const std::int64_t now = Clock::now_ns();
+                next_tick += period_ns;
+                if (now - next_tick > period_ns * 4) next_tick = now + period_ns;
 
-        if (!aoi_scan) aoi_grid.rebuild(arena.xs(), arena.zs(), arena.size());
+                for (auto& q : pending) {
+                    for (std::size_t j = 0; j < q->size; ++j) {
+                        const sockaddr_in from = q->addr[j];
+                        if (arena.size() >= std::size_t(max_players)) break;
+                        if (free_slots.empty()) break;
+                        if (peer_table.find(from) != kNoSlot) continue;
+                        const std::uint32_t slot = free_slots.back();
+                        free_slots.pop_back();
+                        const std::uint32_t session = next_session++;
+                        const float margin = 4.0f, span = world_size - 2.0f * margin;
+                        const float sx = margin + float(rng.next_double()) * span;
+                        const float sz = margin + float(rng.next_double()) * span;
+                        const auto idx = arena.add(next_id++, sx, sz,
+                                                   world::ClientLink{session, slot, 0, 0});
+                        peers[slot] = Peer{from, session, now, idx, 0, false, true,
+                                           q->owner[j]};
+                        peer_table.insert(from, slot);
+                        ++stats[0].joins;
 
-        // ---- 3. one delta datagram per player -------------------------------
-        const float r2 = aoi * aoi;
-        for (std::uint32_t i = 0; i < arena.size(); ++i) {
-            const std::uint32_t slot = arena.link(i).conn_id;
-            if (slot >= peers.size() || !peers[slot].used) continue;
-
-            proto::PlayerRecord recs[proto::kMaxAoiPlayers];
-            std::uint16_t count = 0;
-            auto emit = [&](std::uint32_t o) {
-                proto::PlayerRecord& r = recs[count++];
-                r = {};
-                r.id = arena.id(o); r.x = arena.x(o); r.y = arena.y(o); r.z = arena.z(o);
-                r.yaw = arena.yaw(o); r.pitch = arena.pitch(o);
-                r.health = arena.health(o); r.score = arena.score(o);
-                r.fuel = arena.fuel_pct(o); r.ammo = std::uint8_t(arena.ammo(o));
-                r.flags = std::uint16_t(arena.tick_flags(o) |
-                                        (o == i ? proto::kPlayerSelf : 0) |
-                                        (arena.alive(o) ? 0 : proto::kPlayerDead));
-            };
-            emit(i);
-            const float px = arena.x(i), pz = arena.z(i);
-            if (aoi_scan) {
-                // The original: every player against every other. Kept behind
-                // a flag so the A/B is one binary and a difference cannot be
-                // a build difference.
-                for (std::uint32_t o = 0; o < arena.size() &&
-                                          count < proto::kMaxAoiPlayers; ++o) {
-                    if (o == i) continue;
-                    const float dx = arena.x(o) - px, dz = arena.z(o) - pz;
-                    ++st.aoi_candidates;
-                    if (dx * dx + dz * dz > r2) continue;
-                    emit(o);
+                        const proto::ServerWelcome w{ge::core::mix64(session), session,
+                                                     world_size, aoi, 0, 1,
+                                                     std::uint16_t(tick_hz), 0, 0};
+                        alignas(8) std::byte wbuf[proto::kMaxFrameBytes];
+                        const std::size_t len = proto::encode(wbuf, w, session, 0,
+                                            std::uint8_t(proto::FrameFlags::ServerSent));
+                        const socklen_t flen = sizeof from;
+                        if (::sendto(fds[q->owner[j]], wbuf, len, 0,
+                                     reinterpret_cast<const sockaddr*>(&from), flen) < 0)
+                            ++stats[0].send_fail;
+                        else ++stats[0].datagrams_out;
+                    }
+                    q->clear();
                 }
-            } else {
-                aoi_grid.query_aabb(px, pz, aoi, [&](std::span<const std::uint32_t> cell) {
-                    st.aoi_candidates += cell.size();
-                    for (const std::uint32_t o : cell) {
-                        if (count >= proto::kMaxAoiPlayers) return;
+
+                arena.clear_tick_flags();
+                for (std::uint32_t i = 0; i < arena.size(); ++i)
+                    if (arena.due_respawn(i, tick)) {
+                        const float margin = 4.0f, span = world_size - 2.0f * margin;
+                        arena.spawn(i, margin + float(rng.next_double()) * span,
+                                       margin + float(rng.next_double()) * span);
+                    }
+                arena.step(dt, world_size);
+                for (std::uint32_t i = 0; i < arena.size(); ++i) {
+                    if (!arena.wants_fire(i)) continue;
+                    arena.consume_shot(i);
+                    const world::HitResult h = arena.hitscan(i);
+                    if (h.hit && arena.damage(h.victim, world::kHitDamage, tick, 180))
+                        arena.add_score(i);
+                }
+                // Powerups after movement, so walking onto one is collected on the
+                // tick you reach it rather than the tick after.
+                pickups.update(tick, world_size, rng);
+                arena.collect_pickups(pickups, tick, pickup_respawn_ticks);
+
+                if (!aoi_scan) aoi_grid.rebuild(arena.xs(), arena.zs(), arena.size());
+            }
+
+            sync.wait();
+            if (stop_all.load(std::memory_order_acquire)) break;
+
+            // ---- 3. snapshots, each thread for its own peers ----------------
+            // ---- 3. one delta datagram per player -------------------------------
+            const float r2 = aoi * aoi;
+            for (std::uint32_t i = 0; i < arena.size(); ++i) {
+                const std::uint32_t slot = arena.link(i).conn_id;
+                if (slot >= peers.size() || !peers[slot].used) continue;
+                // Each receive thread answers only the peers the kernel gave it, so
+                // no two threads write the same socket and none needs a lock.
+                if (peers[slot].owner != tid) continue;
+
+                proto::PlayerRecord recs[proto::kMaxAoiPlayers];
+                std::uint16_t count = 0;
+                auto emit = [&](std::uint32_t o) {
+                    proto::PlayerRecord& r = recs[count++];
+                    r = {};
+                    r.id = arena.id(o); r.x = arena.x(o); r.y = arena.y(o); r.z = arena.z(o);
+                    r.yaw = arena.yaw(o); r.pitch = arena.pitch(o);
+                    r.health = arena.health(o); r.score = arena.score(o);
+                    r.fuel = arena.fuel_pct(o); r.ammo = std::uint8_t(arena.ammo(o));
+                    r.flags = std::uint16_t(arena.tick_flags(o) |
+                                            (o == i ? proto::kPlayerSelf : 0) |
+                                            (arena.alive(o) ? 0 : proto::kPlayerDead));
+                };
+                emit(i);
+                const float px = arena.x(i), pz = arena.z(i);
+                if (aoi_scan) {
+                    // The original: every player against every other. Kept behind
+                    // a flag so the A/B is one binary and a difference cannot be
+                    // a build difference.
+                    for (std::uint32_t o = 0; o < arena.size() &&
+                                              count < proto::kMaxAoiPlayers; ++o) {
                         if (o == i) continue;
                         const float dx = arena.x(o) - px, dz = arena.z(o) - pz;
+                        ++st.aoi_candidates;
                         if (dx * dx + dz * dz > r2) continue;
                         emit(o);
                     }
-                });
-            }
+                } else {
+                    aoi_grid.query_aabb(px, pz, aoi, [&](std::span<const std::uint32_t> cell) {
+                        st.aoi_candidates += cell.size();
+                        for (const std::uint32_t o : cell) {
+                            if (count >= proto::kMaxAoiPlayers) return;
+                            if (o == i) continue;
+                            const float dx = arena.x(o) - px, dz = arena.z(o) - pz;
+                            if (dx * dx + dz * dz > r2) continue;
+                            emit(o);
+                        }
+                    });
+                }
 
-            // Every powerup, every tick, to every player -- not only the ones
-            // in range and not only the ones that changed. 12 records is 192
-            // bytes; the alternative is an event stream that needs
-            // acknowledgement to survive a dropped datagram, which is the
-            // complexity this protocol exists to avoid.
-            proto::PickupRecord picks[proto::kMaxPickups];
-            const std::uint16_t np = pickups.size();
-            for (std::uint16_t k = 0; k < np; ++k) {
-                proto::PickupRecord& r = picks[k];
-                r = {};
-                r.x = pickups.x(k); r.y = pickups.y(k); r.z = pickups.z(k);
-                r.id = k;
-                r.kind = pickups.kind(k);
-                r.flags = std::uint8_t(pickups.active(k) ? proto::kPickupActive : 0);
-            }
+                // Every powerup, every tick, to every player -- not only the ones
+                // in range and not only the ones that changed. 12 records is 192
+                // bytes; the alternative is an event stream that needs
+                // acknowledgement to survive a dropped datagram, which is the
+                // complexity this protocol exists to avoid.
+                proto::PickupRecord picks[proto::kMaxPickups];
+                const std::uint16_t np = pickups.size();
+                for (std::uint16_t k = 0; k < np; ++k) {
+                    proto::PickupRecord& r = picks[k];
+                    r = {};
+                    r.x = pickups.x(k); r.y = pickups.y(k); r.z = pickups.z(k);
+                    r.id = k;
+                    r.kind = pickups.kind(k);
+                    r.flags = std::uint8_t(pickups.active(k) ? proto::kPickupActive : 0);
+                }
 
-            proto::ShooterDeltaHeader hdr{};
-            hdr.echo_client_ts_ns = arena.last_ts(i);
-            hdr.tick              = std::uint32_t(tick);
-            hdr.input_seq_ack     = arena.last_seq(i);
-            hdr.count             = count;
-            hdr.pickup_count      = np;
+                proto::ShooterDeltaHeader hdr{};
+                hdr.echo_client_ts_ns = arena.last_ts(i);
+                hdr.tick              = std::uint32_t(tick);
+                hdr.input_seq_ack     = arena.last_seq(i);
+                hdr.count             = count;
+                hdr.pickup_count      = np;
 
-            // Straight into the batch slot -- batching adds no copy.
-            const std::size_t len = proto::encode_flat2<proto::ShooterDeltaHeader,
-                                                        proto::PlayerRecord,
-                                                        proto::PickupRecord>(
-                std::span<std::byte>(tx.staging(), proto::kMaxFrameBytes),
-                hdr, std::span<const proto::PlayerRecord>(recs, count),
-                std::span<const proto::PickupRecord>(picks, np),
-                peers[slot].session, std::uint32_t(tick),
-                std::uint8_t(proto::FrameFlags::ServerSent));
-            if (len == 0) continue;
-            tx.commit(len, peers[slot].addr);
-            if (tx.full()) {
-                const TxBatch::Result r = tx.flush(fd);
-                st.datagrams_out += r.sent;
-                st.send_fail     += r.failed;
-                st.tx_syscalls   += 1;
-                st.tx_batched    += r.sent;
-            }
-        }
-        {   // whatever is left over at the end of the tick
-            const TxBatch::Result r = tx.flush(fd);
-            if (r.sent || r.failed) {
-                st.datagrams_out += r.sent;
-                st.send_fail     += r.failed;
-                st.tx_syscalls   += 1;
-                st.tx_batched    += r.sent;
-            }
-        }
-
-        // ---- 4. evict silent peers -----------------------------------------
-        // UDP has no close, so absence is the only disconnect signal there is.
-        bool evicted = false;
-        for (std::uint32_t s = 0; s < peers.size(); ++s) {
-            if (!peers[s].used || now - peers[s].last_seen < 5'000'000'000LL) continue;
-            const std::uint32_t k = peers[s].arena_slot;
-            if (k < arena.size() && arena.link(k).session == peers[s].session) {
-                arena.remove(k);
-                // remove() swaps the last entity into `k`, so whoever owned the
-                // last slot now owns this one. ClientLink::conn_id is the peer
-                // slot, which is what makes the fix-up a single assignment
-                // rather than another scan.
-                if (k < arena.size()) {
-                    const std::uint32_t moved = arena.link(k).conn_id;
-                    if (moved < peers.size()) peers[moved].arena_slot = k;
+                // Straight into the batch slot -- batching adds no copy.
+                const std::size_t len = proto::encode_flat2<proto::ShooterDeltaHeader,
+                                                            proto::PlayerRecord,
+                                                            proto::PickupRecord>(
+                    std::span<std::byte>(tx.staging(), proto::kMaxFrameBytes),
+                    hdr, std::span<const proto::PlayerRecord>(recs, count),
+                    std::span<const proto::PickupRecord>(picks, np),
+                    peers[slot].session, std::uint32_t(tick),
+                    std::uint8_t(proto::FrameFlags::ServerSent));
+                if (len == 0) continue;
+                tx.commit(len, peers[slot].addr);
+                if (tx.full()) {
+                    const TxBatch::Result r = tx.flush(myfd);
+                    st.datagrams_out += r.sent;
+                    st.send_fail     += r.failed;
+                    st.tx_syscalls   += 1;
+                    st.tx_batched    += r.sent;
                 }
             }
-            peers[s].used = false;
-            peers[s].arena_slot = kNoSlot;
-            free_slots.push_back(s);
-            evicted = true;
-        }
-        if (evicted) peer_table.rebuild(peers);
+            {   // whatever is left over at the end of the tick
+                const TxBatch::Result r = tx.flush(myfd);
+                if (r.sent || r.failed) {
+                    st.datagrams_out += r.sent;
+                    st.send_fail     += r.failed;
+                    st.tx_syscalls   += 1;
+                    st.tx_batched    += r.sent;
+                }
+            }
 
-        ++tick;
-        if (!quiet && now - last_report > 1'000'000'000LL) {
-            last_report = now;
-            // Real ticks, not an assumed 60: when the server falls behind -- the
-            // case this counter exists to show -- a fixed divisor understates it.
-            const std::uint64_t ticks_since = tick - last_report_tick;
-            last_report_tick = tick;
-            std::printf("players %3zu  in %6llu/s  out %6llu/s  joins %llu  bad %llu  "
-                        "sendfail %llu  nosession %llu  inputgaps %llu  rewelcome %llu  "
-                        "dg/syscall rx %.1f tx %.1f  aoicand/tick %.0f\n",
-                        arena.size(),
-                        static_cast<unsigned long long>(st.datagrams_in),
-                        static_cast<unsigned long long>(st.datagrams_out),
-                        static_cast<unsigned long long>(st.joins),
-                        static_cast<unsigned long long>(st.bad),
-                        static_cast<unsigned long long>(st.send_fail),
-                        static_cast<unsigned long long>(st.no_session),
-                        static_cast<unsigned long long>(st.input_gaps),
-                        static_cast<unsigned long long>(st.rewelcomes),
-                        st.rx_syscalls ? double(st.rx_batched) / double(st.rx_syscalls) : 0.0,
-                        st.tx_syscalls ? double(st.tx_batched)   / double(st.tx_syscalls) : 0.0,
-                        ticks_since ? double(st.aoi_candidates) / double(ticks_since)
-                                    : 0.0);
-            st.datagrams_in = st.datagrams_out = 0;
-            st.rx_syscalls = st.rx_batched = st.tx_syscalls = st.tx_batched = 0;
-            st.aoi_candidates = 0;
+
+            sync.wait();
+
+            if (tid == 0) {
+                const std::int64_t now = Clock::now_ns();
+                // ---- 4. evict silent peers -----------------------------------------
+                // UDP has no close, so absence is the only disconnect signal there is.
+                bool evicted = false;
+                for (std::uint32_t s = 0; s < peers.size(); ++s) {
+                    if (!peers[s].used || now - peers[s].last_seen < 5'000'000'000LL) continue;
+                    const std::uint32_t k = peers[s].arena_slot;
+                    if (k < arena.size() && arena.link(k).session == peers[s].session) {
+                        arena.remove(k);
+                        // remove() swaps the last entity into `k`, so whoever owned the
+                        // last slot now owns this one. ClientLink::conn_id is the peer
+                        // slot, which is what makes the fix-up a single assignment
+                        // rather than another scan.
+                        if (k < arena.size()) {
+                            const std::uint32_t moved = arena.link(k).conn_id;
+                            if (moved < peers.size()) peers[moved].arena_slot = k;
+                        }
+                    }
+                    peers[s].used = false;
+                    peers[s].arena_slot = kNoSlot;
+                    free_slots.push_back(s);
+                    evicted = true;
+                }
+                if (evicted) peer_table.rebuild(peers);
+
+                ++tick;
+                if (!quiet && now - last_report > 1'000'000'000LL) {
+                    last_report = now;
+                    // Real ticks, not an assumed 60: when the server falls behind -- the
+                    // case this counter exists to show -- a fixed divisor understates it.
+                    const std::uint64_t ticks_since = tick - last_report_tick;
+                    last_report_tick = tick;
+                    // Per-thread counters, folded for the report. Reporting only
+                    // thread 0's made the server understate its own traffic by
+                    // the thread count -- the bots' delivery figure disagreed
+                    // with in/s by exactly 4x before this was fixed.
+                    for (std::size_t t = 1; t < stats.size(); ++t) {
+                        Stats& o = stats[t];
+                        st.datagrams_in += o.datagrams_in; st.datagrams_out += o.datagrams_out;
+                        st.rx_syscalls += o.rx_syscalls;   st.rx_batched += o.rx_batched;
+                        st.tx_syscalls += o.tx_syscalls;   st.tx_batched += o.tx_batched;
+                        st.aoi_candidates += o.aoi_candidates;
+                        st.joins += o.joins; st.inputs += o.inputs; st.pings += o.pings;
+                        st.bad += o.bad; st.rewelcomes += o.rewelcomes;
+                        st.no_session += o.no_session; st.input_gaps += o.input_gaps;
+                        st.send_fail += o.send_fail;
+                        o.datagrams_in = o.datagrams_out = 0;
+                        o.rx_syscalls = o.rx_batched = o.tx_syscalls = o.tx_batched = 0;
+                        o.aoi_candidates = 0;
+                        o.joins = o.inputs = o.pings = o.bad = o.rewelcomes = 0;
+                        o.no_session = o.input_gaps = o.send_fail = 0;
+                    }
+                    std::printf("players %3zu  in %6llu/s  out %6llu/s  joins %llu  bad %llu  "
+                                "sendfail %llu  nosession %llu  inputgaps %llu  rewelcome %llu  "
+                                "dg/syscall rx %.1f tx %.1f  aoicand/tick %.0f\n",
+                                arena.size(),
+                                static_cast<unsigned long long>(st.datagrams_in),
+                                static_cast<unsigned long long>(st.datagrams_out),
+                                static_cast<unsigned long long>(st.joins),
+                                static_cast<unsigned long long>(st.bad),
+                                static_cast<unsigned long long>(st.send_fail),
+                                static_cast<unsigned long long>(st.no_session),
+                                static_cast<unsigned long long>(st.input_gaps),
+                                static_cast<unsigned long long>(st.rewelcomes),
+                                st.rx_syscalls ? double(st.rx_batched) / double(st.rx_syscalls) : 0.0,
+                                st.tx_syscalls ? double(st.tx_batched)   / double(st.tx_syscalls) : 0.0,
+                                ticks_since ? double(st.aoi_candidates) / double(ticks_since)
+                                            : 0.0);
+                    st.datagrams_in = st.datagrams_out = 0;
+                    st.rx_syscalls = st.rx_batched = st.tx_syscalls = st.tx_batched = 0;
+                    st.aoi_candidates = 0;
+                }
+
+                stop_all.store(g_stop != 0, std::memory_order_release);
+            }
+
+            sync.wait();
+            if (stop_all.load(std::memory_order_acquire)) break;
         }
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(std::size_t(rx_threads - 1));
+    for (int t = 1; t < rx_threads; ++t) pool.emplace_back(worker, t);
+    worker(0);
+    for (auto& th : pool) th.join();
+
+    // Counters live per thread so the hot path never touches another thread's
+    // cache line. Fold them once, here.
+    // The per-second report already folds the other threads into stats[0] and
+    // zeroes them, so a final pass only has to pick up whatever arrived since.
+    Stats st = stats[0];
+    for (std::size_t t = 1; t < stats.size(); ++t) {
+        const Stats& o = stats[t];
+        st.joins += o.joins; st.inputs += o.inputs; st.pings += o.pings;
+        st.bad += o.bad; st.rewelcomes += o.rewelcomes;
+        st.no_session += o.no_session; st.input_gaps += o.input_gaps;
+        st.send_fail += o.send_fail;
     }
 
     std::printf("\nstopped: %llu joins, %llu inputs, %llu pings, %llu bad frames\n",

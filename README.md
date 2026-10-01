@@ -215,6 +215,35 @@ still join, no frame is malformed, no send fails, no sequence gap is recorded.
 The server sheds snapshot delivery and tail latency, not service.
 [`results/scale/`](results/scale/).
 
+### Scaling the syscall path with SO_REUSEPORT
+
+The profile said 83% of the per-datagram cost is kernel, and that work is
+per-socket, so it parallelises. `--rx-threads N` opens N sockets on one port
+and lets the kernel hash each datagram's 4-tuple to one of them; a peer is then
+bound to one thread for its session and owns its entity exclusively, so the
+send phase needs no lock. Two barriers separate draining, simulating and
+sending.
+
+| threads | clients | in /s | out /s | delivery | cores |
+|---|---|---|---|---|---|
+| 1 | 6144 | 702,632 | 463,622 | 27.3% | 1.00 |
+| 4 | 6144 | 741,995 | 738,552 | **75.2%** | 3.45 |
+| 8 | 6144 | 749,423 | 747,399 | 69.5% | 5.45 |
+
+With one thread the server takes in 702k datagrams/s and emits 464k: it is
+dropping a third of its work. With four, in and out match again. **The output
+ceiling moves from ~464,000 to ~739,000 datagrams/s, about 1.59x, for 3.45
+cores.** Eight threads is worse than four on every count -- fewer deliveries,
+double the p99, two more cores -- because eight receive threads on eight cores
+leave nothing for interrupt handling and the barrier costs more the more
+threads reach it.
+
+Needs Linux: the design relies on the kernel's 4-tuple hash keeping a peer on
+one socket. macOS spreads one peer across sockets, which makes two threads
+write the same peer, so the server refuses `--rx-threads > 1` there rather than
+pretend. ThreadSanitizer on Linux, 4 threads under real load: 0 races.
+[`results/reuseport/`](results/reuseport/).
+
 ### Over the real internet
 
 256 bots from each of three origins against one server in us-east-2:
@@ -400,8 +429,13 @@ The arena server:
   three regions, but there is still a single server: no failover, no
   persistence, no routing. Nothing survives a restart.
 - **No kernel bypass and no busy-poll.** No `SO_BUSY_POLL`, no AF_XDP, no DPDK.
-  Given that 83% of the per-datagram cost is kernel, this is where the next win
-  is, and it has not been done.
+  `SO_REUSEPORT` took the syscall path as far as threads can; past that the
+  remaining kernel cost needs a different transport, and that is not done.
+- **`--rx-threads` was measured against saturated generators.** Only 1-vCPU
+  spot instances were available, and their idle sat at 1-3%, so the delivery
+  percentages in that table are a floor and the client counts are not a
+  capacity claim. The in/out ratio, which is internal to the server, is what
+  the conclusion rests on.
 - **Branch misses doubled** at 2048 after the area-of-interest fix, 28.1 M to
   58.2 M. Hash probing and grid-cell iteration replacing a perfectly predicted
   linear scan is the plausible explanation. It is unverified, so it is not
