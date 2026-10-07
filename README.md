@@ -224,19 +224,25 @@ bound to one thread for its session and owns its entity exclusively, so the
 send phase needs no lock. Two barriers separate draining, simulating and
 sending.
 
-| threads | clients | in /s | out /s | delivery | cores |
-|---|---|---|---|---|---|
-| 1 | 6144 | 702,632 | 463,622 | 27.3% | 1.00 |
-| 4 | 6144 | 741,995 | 738,552 | **75.2%** | 3.45 |
-| 8 | 6144 | 749,423 | 747,399 | 69.5% | 5.45 |
+Each client sends an input and a ping per tick, so at N players the server owes
+N x 60 x 2 datagrams/s. What it actually emitted:
 
-With one thread the server takes in 702k datagrams/s and emits 464k: it is
-dropping a third of its work. With four, in and out match again. **The output
-ceiling moves from ~464,000 to ~739,000 datagrams/s, about 1.59x, for 3.45
-cores.** Eight threads is worse than four on every count -- fewer deliveries,
-double the p99, two more cores -- because eight receive threads on eight cores
-leave nothing for interrupt handling and the barrier costs more the more
-threads reach it.
+| threads | clients | out /s | owed /s | out / owed | cores |
+|---|---|---|---|---|---|
+| 1 | 6144 | 463,622 | 737,280 | **62.9%** | 1.00 |
+| 4 | 6144 | 738,552 | 737,280 | **100.2%** | 3.45 |
+| 8 | 6144 | 747,399 | 737,280 | **101.4%** | 5.45 |
+
+With one thread the server drops a third of its work. **With four it emitted
+everything it owed** -- it was not struggling at 6144, the generators ran out
+first. So the single-core ceiling is measured at ~452,600-464,000 datagrams/s;
+**the four-thread ceiling is above 739,000 and was never reached**, at 3.45
+cores of eight.
+
+Eight threads served the same load just as completely and spent 5.45 cores
+doing it against four threads' 3.45 -- 58% more CPU for no more output. The
+cost is the barrier, priced by the slowest arrival, plus a serial simulation
+phase that does not shrink when threads are added.
 
 Needs Linux: the design relies on the kernel's 4-tuple hash keeping a peer on
 one socket. macOS spreads one peer across sockets, which makes two threads
@@ -431,11 +437,11 @@ The arena server:
 - **No kernel bypass and no busy-poll.** No `SO_BUSY_POLL`, no AF_XDP, no DPDK.
   `SO_REUSEPORT` took the syscall path as far as threads can; past that the
   remaining kernel cost needs a different transport, and that is not done.
-- **`--rx-threads` was measured against saturated generators.** Only 1-vCPU
-  spot instances were available, and their idle sat at 1-3%, so the delivery
-  percentages in that table are a floor and the client counts are not a
-  capacity claim. The in/out ratio, which is internal to the server, is what
-  the conclusion rests on.
+- **The multi-threaded ceiling was never found.** Only 1-vCPU spot generators
+  were available and they sat at 1-3% idle, so 6144 clients is where the load
+  ran out, not where the server did. Four threads emitted 100.2% of what they
+  owed there. The single-core ceiling is measured; the four-thread one is only
+  bounded below.
 - **Branch misses doubled** at 2048 after the area-of-interest fix, 28.1 M to
   58.2 M. Hash probing and grid-cell iteration replacing a perfectly predicted
   linear scan is the plausible explanation. It is unverified, so it is not
