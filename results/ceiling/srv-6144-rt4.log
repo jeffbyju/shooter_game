@@ -1,0 +1,52 @@
+ge_arena_udp on 0.0.0.0:9200 -- 60 Hz, world 2000, aoi 64, max 16384 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 6005  in  18777/s  out  23236/s  joins 6005  bad 0  sendfail 0  nosession 1494  inputgaps 0  rewelcome 0  dg/syscall rx 5.5 tx 62.7  aoicand/tick 10539
+players 6144  in 397832/s  out 346434/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 180635  rewelcome 0  dg/syscall rx 51.2 tx 62.7  aoicand/tick 339665
+players 6144  in 537796/s  out 459357/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 353922  rewelcome 0  dg/syscall rx 32.8 tx 62.7  aoicand/tick 338947
+players 6144  in 687190/s  out 644649/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 381124  rewelcome 0  dg/syscall rx 9.5 tx 62.7  aoicand/tick 338935
+players 6144  in 749578/s  out 749573/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 381124  rewelcome 0  dg/syscall rx 5.0 tx 62.7  aoicand/tick 339035
+players 6144  in 740473/s  out 714299/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 383796  rewelcome 0  dg/syscall rx 6.8 tx 62.7  aoicand/tick 339340
+players 6144  in 558190/s  out 475694/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 488614  rewelcome 0  dg/syscall rx 63.6 tx 62.7  aoicand/tick 339533
+players 6144  in 547100/s  out 470151/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 607011  rewelcome 0  dg/syscall rx 36.3 tx 62.7  aoicand/tick 338909
+players 6144  in 730888/s  out 709507/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 623515  rewelcome 0  dg/syscall rx 9.5 tx 62.7  aoicand/tick 338257
+players 6144  in 737261/s  out 737271/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 623515  rewelcome 0  dg/syscall rx 5.2 tx 62.7  aoicand/tick 337959
+players 6144  in 745247/s  out 722831/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 623515  rewelcome 0  dg/syscall rx 9.0 tx 62.7  aoicand/tick 338542
+players 6144  in 672235/s  out 569584/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 648852  rewelcome 0  dg/syscall rx 10.8 tx 62.7  aoicand/tick 339139
+players 6144  in 752904/s  out 702082/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 665283  rewelcome 0  dg/syscall rx 15.0 tx 62.7  aoicand/tick 337415
+players 6144  in 737279/s  out 737279/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 665283  rewelcome 0  dg/syscall rx 5.7 tx 62.7  aoicand/tick 336938
+players 6144  in 724997/s  out 724995/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 665283  rewelcome 0  dg/syscall rx 7.5 tx 62.7  aoicand/tick 338348
+players 6144  in 719796/s  out 611801/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674552  rewelcome 0  dg/syscall rx 13.5 tx 62.7  aoicand/tick 339291
+players 6144  in 758290/s  out 741641/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 25.4 tx 62.7  aoicand/tick 340659
+players 6144  in 743452/s  out 746510/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 6.3 tx 62.7  aoicand/tick 340834
+players 6144  in 724994/s  out 724993/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 7.4 tx 62.7  aoicand/tick 339827
+players 6144  in 758454/s  out 735578/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 37.3 tx 62.7  aoicand/tick 339059
+players 6144  in 742055/s  out 758100/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 37.9 tx 62.7  aoicand/tick 338108
+players 6144  in 748198/s  out 755027/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.0 tx 62.7  aoicand/tick 338299
+players 6144  in 749562/s  out 749565/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.6 tx 62.7  aoicand/tick 339675
+players 6144  in 749571/s  out 749570/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 10.4 tx 62.7  aoicand/tick 340769
+players 6144  in 739588/s  out 738434/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.1 tx 62.7  aoicand/tick 341445
+players 6144  in 737640/s  out 737460/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 7.6 tx 62.7  aoicand/tick 340410
+players 6144  in 759185/s  out 760520/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.1 tx 62.7  aoicand/tick 339202
+players 6144  in 737321/s  out 731157/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.5 tx 62.7  aoicand/tick 339110
+players 6144  in 749533/s  out 755694/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.6 tx 62.7  aoicand/tick 339171
+players 6144  in 737285/s  out 737283/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.1 tx 62.7  aoicand/tick 339836
+players 6144  in 749555/s  out 749561/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.5 tx 62.7  aoicand/tick 340634
+players 6144  in 741375/s  out 739328/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.1 tx 62.7  aoicand/tick 340592
+players 6144  in 736658/s  out 736968/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.1 tx 62.7  aoicand/tick 340931
+players 6144  in 758385/s  out 760121/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.7 tx 62.7  aoicand/tick 340860
+players 6144  in 737638/s  out 731315/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.2 tx 62.7  aoicand/tick 340151
+players 6144  in 749217/s  out 755537/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.0 tx 62.7  aoicand/tick 341332
+players 6144  in 737279/s  out 737278/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.4 tx 62.7  aoicand/tick 340503
+players 6144  in 749567/s  out 749569/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.1 tx 62.7  aoicand/tick 340021
+players 6144  in 742304/s  out 739791/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.4 tx 62.7  aoicand/tick 338827
+players 6144  in 735815/s  out 736548/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.0 tx 62.7  aoicand/tick 338145
+players 6144  in 758301/s  out 760079/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 8.7 tx 62.7  aoicand/tick 338842
+players 6144  in 740140/s  out 732566/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.4 tx 62.7  aoicand/tick 338831
+players 6144  in 746715/s  out 754285/s  joins 6144  bad 0  sendfail 0  nosession 2050  inputgaps 674799  rewelcome 0  dg/syscall rx 9.

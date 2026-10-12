@@ -225,24 +225,27 @@ send phase needs no lock. Two barriers separate draining, simulating and
 sending.
 
 Each client sends an input and a ping per tick, so at N players the server owes
-N x 60 x 2 datagrams/s. What it actually emitted:
+N x 60 x 2 datagrams/s. Measured against four `c7g.large` generators whose idle
+never fell below 42.7%, so the rig is not the limit:
 
-| threads | clients | out /s | owed /s | out / owed | cores |
-|---|---|---|---|---|---|
-| 1 | 6144 | 463,622 | 737,280 | **62.9%** | 1.00 |
-| 4 | 6144 | 738,552 | 737,280 | **100.2%** | 3.45 |
-| 8 | 6144 | 747,399 | 737,280 | **101.4%** | 5.45 |
+| threads | players at 95%+ served | peak out /s | cores at peak |
+|---|---|---|---|
+| 1 | 4,096 | 468,000 | 1.00 |
+| 4 | 7,168 | 820,296 | 3.65 |
+| 8 | ~8,192 | 908,363 | 7.66 |
 
-With one thread the server drops a third of its work. **With four it emitted
-everything it owed** -- it was not struggling at 6144, the generators ran out
-first. So the single-core ceiling is measured at ~452,600-464,000 datagrams/s;
-**the four-thread ceiling is above 739,000 and was never reached**, at 3.45
-cores of eight.
+**The gain is real and sublinear**: 1.75x the players for 3.65x the cores. Per
+core, peak output goes 468k, 225k, 119k -- each doubling of threads buys about
+half again as much and halves the efficiency. The serial simulation phase and
+the barrier are why.
 
-Eight threads served the same load just as completely and spent 5.45 cores
-doing it against four threads' 3.45 -- 58% more CPU for no more output. The
-cost is the barrier, priced by the slowest arrival, plus a serial simulation
-phase that does not shrink when threads are added.
+**Threads also change the shape of failure.** One thread plateaus past its knee
+-- 452,605 /s at 4096 clients and 452,599 /s at 6144, the same number twice.
+Four threads peak at 820k and then *fall*: 799k, 653k, 562k, losing a third of
+their throughput while being asked for more. A barrier's cost is set by its
+slowest arrival, so under overload every tick waits for the worst-off thread.
+The synchronisation that makes it faster below the knee makes it fail worse
+above it. [`results/ceiling/`](results/ceiling/).
 
 Needs Linux: the design relies on the kernel's 4-tuple hash keeping a peer on
 one socket. macOS spreads one peer across sockets, which makes two threads
@@ -437,11 +440,12 @@ The arena server:
 - **No kernel bypass and no busy-poll.** No `SO_BUSY_POLL`, no AF_XDP, no DPDK.
   `SO_REUSEPORT` took the syscall path as far as threads can; past that the
   remaining kernel cost needs a different transport, and that is not done.
-- **The multi-threaded ceiling was never found.** Only 1-vCPU spot generators
-  were available and they sat at 1-3% idle, so 6144 clients is where the load
-  ran out, not where the server did. Four threads emitted 100.2% of what they
-  owed there. The single-core ceiling is measured; the four-thread one is only
-  bounded below.
+- **The ceiling cells are single 45 s runs, not medians.** The shape -- rise,
+  peak, collapse -- is far larger than run-to-run noise, but the individual
+  figures are not tight and the knee is bracketed (6,144-7,168 for four
+  threads) rather than located.
+- **Eight receive threads on an eight-core box** leaves nothing for interrupt
+  handling, so part of the 8-thread cost is that rather than the design.
 - **Branch misses doubled** at 2048 after the area-of-interest fix, 28.1 M to
   58.2 M. Hash probing and grid-cell iteration replacing a perfectly predicted
   linear scan is the plausible explanation. It is unverified, so it is not
