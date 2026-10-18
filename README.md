@@ -236,8 +236,23 @@ never fell below 42.7%, so the rig is not the limit:
 
 **The gain is real and sublinear**: 1.75x the players for 3.65x the cores. Per
 core, peak output goes 468k, 225k, 119k -- each doubling of threads buys about
-half again as much and halves the efficiency. The serial simulation phase and
-the barrier are why.
+half again as much and halves the efficiency.
+
+Fitting Amdahl's law to the two speedups gives a non-scaling fraction of 42.7%
+at four threads and 44.6% at eight -- two independent points on the same
+number, so the model fits. **That caps any thread count at 2.27x
+single-threaded, about 1.06M datagrams/s**; sixteen threads would buy ~8% over
+eight. Past that, more threads is not the lever. The 44% is not all simulation
+(profiled at ~15% of a core): it also includes barrier wait, the single NIC and
+kernel UDP path beneath the separate sockets, softirq, and shared memory
+bandwidth.
+
+The cores column is CPU-time, not a core count -- `(utime + stime) / (elapsed x
+100)` from `/proc/PID/stat`. 7.66 of 8 is 96% occupancy; threads waiting at a
+barrier accrue no CPU time, which is the same cost the Amdahl fit measures from
+the other direction. Threads were not pinned in this run, and the single-thread
+baseline came from an earlier run that was, so the placement policy is not
+like-for-like.
 
 **Threads also change the shape of failure.** One thread plateaus past its knee
 -- 452,605 /s at 4096 clients and 452,599 /s at 6144, the same number twice.
