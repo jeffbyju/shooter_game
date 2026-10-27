@@ -1,0 +1,9 @@
+     bw_out_allowance_exceeded: 24246223
+     pps_allowance_exceeded: 45997437
+     bw_out_allowance_exceeded: 24280425
+     pps_allowance_exceeded: 47521425
+players 6144  in 774148/s  out 774146/s  joins 6144  bad 0  sendfail 0  nosession 2130  inputgaps 574352  rewelcome 0  dg/syscall rx 4.2 tx 62.1  aoicand/tick 340909
+players 6144  in 737283/s  out 737281/s  joins 6144  bad 0  sendfail 0  nosession 2130  inputgaps 574352  rewelcome 0  dg/syscall rx 4.4 tx 62.1  aoicand/tick 340572
+players 6144  in 700409/s  out 700413/s  joins 6144  bad 0  sendfail 0  nosession 2130  inputgaps 574352  rewelcome 0  dg/syscall rx 9.2 tx 62.1  aoicand/tick 339146
+players 6144  in 765531/s  out 714538/s  joins 6144  bad 0  sendfail 0  nosession 2130  inputgaps 586795  rewelcome 0  dg/syscall rx 10.5 tx 62.1  aoicand/tick 337780
+players 6144  in 749566/s  out 749566/s  joins 6144  bad 0  sendfail 0  nosession 2130  inputgaps 586795  rewelcome 0  dg/syscall rx 4.5 tx 6

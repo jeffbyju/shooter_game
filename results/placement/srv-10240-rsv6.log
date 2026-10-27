@@ -1,0 +1,51 @@
+ge_arena_udp on 0.0.0.0:9200 -- 60 Hz, world 2000, aoi 64, max 16384 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 10240  in 379751/s  out 295946/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 347328  rewelcome 303  dg/syscall rx 10.8 tx 62.0  aoicand/tick 641409
+players 10240  in 527021/s  out 417111/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 935811  rewelcome 303  dg/syscall rx 10.2 tx 62.1  aoicand/tick 937577
+players 10240  in 497736/s  out 361490/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 1331713  rewelcome 303  dg/syscall rx 17.3 tx 62.1  aoicand/tick 937608
+players 10240  in 829032/s  out 742066/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 1547832  rewelcome 303  dg/syscall rx 28.4 tx 62.1  aoicand/tick 937762
+players 10240  in 1183068/s  out 1246674/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 1550801  rewelcome 303  dg/syscall rx 6.4 tx 62.1  aoicand/tick 937903
+players 10240  in 1203646/s  out 1226458/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 1551515  rewelcome 303  dg/syscall rx 4.2 tx 62.1  aoicand/tick 938040
+players 10240  in 855078/s  out 722618/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 1791290  rewelcome 303  dg/syscall rx 18.2 tx 62.1  aoicand/tick 937422
+players 10240  in 595420/s  out 461543/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 2155925  rewelcome 303  dg/syscall rx 13.8 tx 62.1  aoicand/tick 934972
+players 10240  in 658707/s  out 513575/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 2602178  rewelcome 303  dg/syscall rx 20.2 tx 62.1  aoicand/tick 935888
+players 10240  in 760321/s  out 697568/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 2838805  rewelcome 303  dg/syscall rx 44.6 tx 62.1  aoicand/tick 936414
+players 10240  in 1197949/s  out 1233858/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 2878558  rewelcome 303  dg/syscall rx 11.8 tx 62.1  aoicand/tick 936780
+players 10240  in 1188930/s  out 1208865/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 2878558  rewelcome 303  dg/syscall rx 5.3 tx 62.1  aoicand/tick 936465
+players 10240  in 803331/s  out 727995/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 3107626  rewelcome 303  dg/syscall rx 52.9 tx 62.1  aoicand/tick 936624
+players 10240  in 516652/s  out 442642/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 3424486  rewelcome 303  dg/syscall rx 63.6 tx 62.1  aoicand/tick 936662
+players 10240  in 584596/s  out 538018/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 3808155  rewelcome 303  dg/syscall rx 63.6 tx 62.1  aoicand/tick 936287
+players 10240  in 750200/s  out 702641/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 4106990  rewelcome 303  dg/syscall rx 56.8 tx 62.1  aoicand/tick 935315
+players 10240  in 1116528/s  out 1090356/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 4204124  rewelcome 303  dg/syscall rx 15.5 tx 62.1  aoicand/tick 934965
+players 10240  in 1185555/s  out 1196473/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 4211637  rewelcome 303  dg/syscall rx 6.7 tx 62.1  aoicand/tick 935603
+players 10240  in 791877/s  out 763397/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 4386731  rewelcome 303  dg/syscall rx 30.5 tx 62.1  aoicand/tick 937026
+players 10240  in 618403/s  out 564651/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 4725945  rewelcome 303  dg/syscall rx 63.5 tx 62.1  aoicand/tick 938161
+players 10240  in 743855/s  out 627640/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5055430  rewelcome 303  dg/syscall rx 13.6 tx 62.1  aoicand/tick 939058
+players 10240  in 657427/s  out 645491/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5302139  rewelcome 303  dg/syscall rx 63.5 tx 62.1  aoicand/tick 938557
+players 10240  in 993486/s  out 915861/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5476799  rewelcome 303  dg/syscall rx 20.8 tx 62.1  aoicand/tick 938873
+players 10240  in 1184846/s  out 1227161/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5484526  rewelcome 303  dg/syscall rx 63.4 tx 62.1  aoicand/tick 938901
+players 10240  in 1041596/s  out 898602/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5555890  rewelcome 303  dg/syscall rx 16.2 tx 62.1  aoicand/tick 938855
+players 10240  in 790873/s  out 722397/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5772613  rewelcome 303  dg/syscall rx 25.5 tx 62.1  aoicand/tick 939052
+players 10240  in 851468/s  out 742593/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 5988567  rewelcome 303  dg/syscall rx 10.7 tx 62.1  aoicand/tick 938185
+players 10240  in 1054080/s  out 864339/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6106260  rewelcome 303  dg/syscall rx 9.0 tx 62.1  aoicand/tick 939657
+players 10240  in 1249548/s  out 1218474/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6118007  rewelcome 303  dg/syscall rx 24.0 tx 62.1  aoicand/tick 939068
+players 10240  in 1153055/s  out 1078210/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6128900  rewelcome 303  dg/syscall rx 37.9 tx 62.1  aoicand/tick 938783
+players 10240  in 1008846/s  out 841682/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6220586  rewelcome 303  dg/syscall rx 14.7 tx 62.1  aoicand/tick 937721
+players 10240  in 922451/s  out 778340/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6382618  rewelcome 303  dg/syscall rx 9.3 tx 62.1  aoicand/tick 937059
+players 10240  in 1050548/s  out 862623/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6513331  rewelcome 303  dg/syscall rx 9.5 tx 62.1  aoicand/tick 937133
+players 10240  in 1240656/s  out 1182678/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6535460  rewelcome 303  dg/syscall rx 16.1 tx 62.1  aoicand/tick 938509
+players 10240  in 1244191/s  out 1195261/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6539404  rewelcome 303  dg/syscall rx 33.3 tx 62.1  aoicand/tick 937016
+players 10240  in 982471/s  out 858819/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6642828  rewelcome 303  dg/syscall rx 20.7 tx 62.1  aoicand/tick 934960
+players 10240  in 960133/s  out 796612/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6819080  rewelcome 303  dg/syscall rx 10.6 tx 62.1  aoicand/tick 936143
+players 10240  in 978564/s  out 815942/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6953764  rewelcome 303  dg/syscall rx 9.2 tx 62.1  aoicand/tick 935928
+players 10240  in 1170406/s  out 1085873/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6978380  rewelcome 303  dg/syscall rx 16.6 tx 62.1  aoicand/tick 935208
+players 10240  in 1227809/s  out 1197521/s  joins 10240  bad 0  sendfail 0  nosession 5815  inputgaps 6979173  rewelcome 303  dg/syscall rx 60.8 tx 62.1  aoicand/tick 936286
+players 10240  in 1128756/s  out 953071/s  joins 10240  bad 0  s
