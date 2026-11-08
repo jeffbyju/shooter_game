@@ -39,6 +39,11 @@ struct ServerConfig {
     std::uint16_t shards          = 2;
     int           tick_hz         = 60;
     std::uint32_t conns_per_io    = 512;
+    // listen() backlog. 1024 was not enough: three load generators opening
+    // ~2000 connections at once overflowed the accept queue and the kernel
+    // reset the overflow, which clients saw as a connection that died during
+    // the handshake.
+    int           backlog         = 1024;
     std::uint32_t read_buf_bytes  = 4096;
     std::uint32_t write_buf_bytes = 16384;    // power of two required
     int           poll_timeout_ms = 50;

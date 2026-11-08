@@ -30,6 +30,7 @@ void on_signal(int) { g_stop.store(true, std::memory_order_release); }
 "    --shards N        simulation threads     (default 2)\n"
 "    --tick-hz N       simulation rate        (default 60)\n"
 "    --max-conns N     connections per I/O thread (default 512)\n"
+"    --backlog N       listen() backlog           (default 1024)\n"
 "    --world W         world is W x W units        (default 1024)\n"
 "    --aoi R           how far a player can see    (default 64)\n"
 "\n"
@@ -57,6 +58,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--shards"))     cfg.shards = std::uint16_t(std::atoi(next()));
         else if (!std::strcmp(argv[i], "--tick-hz"))    cfg.tick_hz = std::atoi(next());
         else if (!std::strcmp(argv[i], "--max-conns"))  cfg.conns_per_io = std::uint32_t(std::atoi(next()));
+        else if (!std::strcmp(argv[i], "--backlog"))    cfg.backlog = std::atoi(next());
         else if (!std::strcmp(argv[i], "--world"))      cfg.world_size = float(std::atof(next()));
         else if (!std::strcmp(argv[i], "--aoi"))        cfg.aoi_radius = float(std::atof(next()));
         else if (!std::strcmp(argv[i], "--io-backend")) {

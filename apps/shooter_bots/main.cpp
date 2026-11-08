@@ -37,6 +37,10 @@ struct Bot {
     bool          due_poll  = false;
     std::uint32_t last_health = ge::world::kMaxHealth;
     std::uint32_t last_tick   = 0xffffffffu;   // so stats count deltas, not polls
+    // A dropped connection used to abort the whole process, so one bot losing
+    // its socket threw away every other bot's run. Over TCP during a join burst
+    // that is common enough to lose entire cells.
+    bool          dead      = false;
     std::uint64_t hits_taken = 0, deaths = 0, shots_seen = 0;
     std::uint8_t  last_fuel = 0, last_ammo = 0;
     bool          have_res  = false;
@@ -154,6 +158,7 @@ int main(int argc, char** argv) {
         {
             const float t = float(double(now) / 1e9);
             for (auto& b : bots) {
+                if (b.dead) continue;
                 if (now < b.next_send) { if (b.next_send < soonest) soonest = b.next_send; continue; }
                 b.due_poll = true;
                 // += period, not now + period: an open-loop generator must not
@@ -256,15 +261,9 @@ int main(int argc, char** argv) {
                     btn |= ge::proto::kBtnJet;
                 else if (std::sin(t * 1.7f + b.phase) > 0.9f)
                     btn |= ge::proto::kBtnJump;
-                if (!b.net.send_input(mx, mz, yaw, pitch, btn)) {
-                    std::fprintf(stderr, "a bot lost its connection\n");
-                    return 1;
-                }
+                if (!b.net.send_input(mx, mz, yaw, pitch, btn)) { b.dead = true; continue; }
                 b.outstanding.push_back(b.net.last_input_ts());
-                if (!b.net.send_ping()) {
-                    std::fprintf(stderr, "a bot lost its connection\n");
-                    return 1;
-                }
+                if (!b.net.send_ping()) { b.dead = true; continue; }
                 ++sent;
                 if (b.next_send < soonest) soonest = b.next_send;
             }
@@ -284,7 +283,7 @@ int main(int argc, char** argv) {
         // rather than the server. A bot receives at 60 Hz, so polling it at
         // 60 Hz is all it needs.
         for (auto& b : bots) {
-            if (!b.due_poll) continue;
+            if (b.dead || !b.due_poll) continue;
             b.due_poll = false;
             const std::size_t before = b.view.players.size();
             (void)before;
@@ -298,8 +297,8 @@ int main(int argc, char** argv) {
             b.net.set_drop_pct(drop_pct);
             b.net.set_send_drop_pct(send_drop_pct);
             if (!b.net.poll(b.view)) {
-                std::fprintf(stderr, "a bot lost its connection\n");
-                return 1;
+                b.dead = true;
+                continue;
             }
             if (b.view.last_pong_ns && b.view.last_pong_ns != prev_pong)
                 pongs.push_back(b.view.last_pong_ns);
@@ -406,7 +405,7 @@ int main(int argc, char** argv) {
                     "\"hits_taken\":%llu,\"deaths\":%llu,"
                     "\"shots_seen\":%llu,\"max_visible\":%zu,\"best_score\":%llu,"
                     "\"pickups_visible\":%zu,\"fuel_pickups\":%llu,\"ammo_pickups\":%llu,"
-                    "\"dry_ticks\":%llu}\n",
+                    "\"dry_ticks\":%llu,\"dead\":%zu}\n",
                     nbots, seconds, static_cast<unsigned long long>(sent),
                         static_cast<unsigned long long>(deltas),
                     ppct(0.50), ppct(0.90), ppct(0.99), rtts.size(), pct(0.50), pct(0.90),
@@ -421,7 +420,9 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(best_score), max_pickups,
                     static_cast<unsigned long long>(fuel_taken),
                     static_cast<unsigned long long>(ammo_taken),
-                    static_cast<unsigned long long>(dry_ticks));
+                    static_cast<unsigned long long>(dry_ticks),
+                    std::count_if(bots.begin(), bots.end(),
+                                  [](const Bot& b) { return b.dead; }));
     } else {
         if (drop_pct) std::printf("\n  [injected %d%% delta loss]\n", drop_pct);
         if (send_drop_pct) std::printf("  [injected %d%% input loss]\n", send_drop_pct);

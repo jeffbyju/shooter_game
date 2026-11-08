@@ -90,7 +90,7 @@ core::Status WorldServer::start(const ServerConfig& cfg) {
     // own listener resolves the port (possibly from an ephemeral 0), and the
     // rest join it.
     if (!use_reuseport_) {
-        auto listener = net::listen_tcp(cfg_.host.c_str(), cfg_.port, 1024);
+        auto listener = net::listen_tcp(cfg_.host.c_str(), cfg_.port, cfg_.backlog);
         if (!listener) return std::unexpected(listener.error());
         listen_fd_ = std::move(*listener);
         bound_port_ = net::local_port(listen_fd_.get());
@@ -140,7 +140,8 @@ core::Status WorldServer::start(const ServerConfig& cfg) {
         if (use_reuseport_) {
             // The first thread may be resolving an ephemeral port for everyone.
             auto own = net::listen_tcp_shared(cfg_.host.c_str(),
-                                              bound_port_ ? bound_port_ : cfg_.port, 1024);
+                                              bound_port_ ? bound_port_ : cfg_.port,
+                                              cfg_.backlog);
             if (!own) return std::unexpected(own.error());
             t->listener = std::move(*own);
             if (bound_port_ == 0) bound_port_ = net::local_port(t->listener.get());
