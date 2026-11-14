@@ -139,6 +139,9 @@ private:
     net::Fd                      listen_fd_;
     std::uint16_t                bound_port_ = 0;
     std::atomic<bool>            running_{false};
+    // Accepted connections dropped because an I/O thread's handoff ring was
+    // full. Silent before it was counted.
+    std::atomic<std::uint64_t>   handoff_full_{0};
     std::atomic<std::uint32_t>   next_session_{1};
 
     std::vector<std::unique_ptr<IoThread>>            io_;

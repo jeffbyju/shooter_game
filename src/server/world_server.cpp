@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <bit>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -22,7 +23,16 @@ using core::Clock;
 struct WorldServer::IoThread {
     std::uint16_t             index = 0;
     net::Reactor              reactor;
-    container::MpmcQueue<int> handoff{256};   // accepted fds waiting for adoption
+    // Accepted fds waiting for an I/O thread to adopt them. Sized from
+    // --max-conns rather than fixed: at 256 per thread a connection burst
+    // larger than io_threads x 256 overflowed, and an overflowing handoff
+    // CLOSES an already-accepted connection. The client has completed its
+    // handshake by then, so it sees a reset rather than a refusal, and no
+    // kernel counter records it -- ListenOverflows stays at zero while three
+    // quarters of a 4096-client burst disappears.
+    container::MpmcQueue<int> handoff;
+
+    explicit IoThread(std::size_t handoff_cap) : handoff(handoff_cap) {}
     net::Fd                   listener;       // own SO_REUSEPORT listener, if enabled
     int                       cpu = -1;       // the core it was pinned to, or -1
 
@@ -119,7 +129,10 @@ core::Status WorldServer::start(const ServerConfig& cfg) {
     // ---- I/O threads ------------------------------------------------------
     io_.reserve(cfg_.io_threads);
     for (std::uint16_t i = 0; i < cfg_.io_threads; ++i) {
-        auto t = std::make_unique<IoThread>();
+        // Handoff sized from --max-conns, so a burst of that many arrivals
+        // cannot overflow it.
+        auto t = std::make_unique<IoThread>(
+            std::max<std::size_t>(256, std::bit_ceil(std::size_t(cfg_.conns_per_io))));
         t->index = i;
         if (auto r = t->reactor.open(cfg_.io_backend); !r) return r;
 
@@ -221,7 +234,13 @@ void WorldServer::acceptor_loop() {
                 // every accept; with homogeneous clients round-robin lands
                 // within a few percent of it for free.
                 IoThread& t = *io_[rr++ % io_.size()];
-                if (!t.handoff.try_push(fd)) { ::close(fd); continue; }
+                if (!t.handoff.try_push(fd)) {
+                    // Still possible if a thread stalls. Count it: this used to
+                    // be an invisible connection loss.
+                    handoff_full_.fetch_add(1, std::memory_order_relaxed);
+                    ::close(fd);
+                    continue;
+                }
                 t.reactor.wake();
             }
         }

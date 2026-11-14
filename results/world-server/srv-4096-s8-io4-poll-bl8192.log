@@ -1,0 +1,59 @@
+ge_world_server listening on 0.0.0.0:7777 -- 4 I/O threads, 8 shards, 60 Hz
+  world 2000x2000, area of interest 64
+  note: 8 shards -- players are split across them by session and
+        cannot see each other. Use --shards 1 for a single shared world.
+  note: area of interest (64) is smaller than the world (2000), so two
+        players are rarely in range. Use --aoi 4000 to make everyone visible.
+conns    0  entities     0  in       0/s  out       0/s  ticks  480/s  drops 0  rss 830.74 MiB
+conns    0  entities     0  in       0/s  out       0/s  ticks  480/s  drops 0  rss 830.74 MiB
+conns    0  entities     0  in       0/s  out       0/s  ticks  480/s  drops 0  rss 830.74 MiB
+conns    0  entities     0  in       0/s  out       0/s  ticks  480/s  drops 0  rss 830.74 MiB
+conns    0  entities     0  in       0/s  out       0/s  ticks  480/s  drops 0  rss 830.74 MiB
+conns    0  entities     0  in       0/s  out       0/s  ticks  480/s  drops 0  rss 830.74 MiB
+conns 2037  entities   785  in   44040/s  out   23111/s  ticks  480/s  drops 0  rss 831.18 MiB
+conns 4096  entities  4096  in  570324/s  out  533298/s  ticks  488/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492460/s  out  491990/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492380/s  out  492272/s  ticks  488/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492458/s  out  494091/s  ticks  479/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492466/s  out  493665/s  ticks  481/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492470/s  out  491995/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492433/s  out  491976/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492426/s  out  491971/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492479/s  out  491999/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492465/s  out  491996/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492475/s  out  491995/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492394/s  out  492611/s  ticks  487/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492463/s  out  494010/s  ticks  481/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492469/s  out  493418/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492477/s  out  491998/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492485/s  out  492004/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492453/s  out  491986/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492455/s  out  491989/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492455/s  out  491986/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492470/s  out  491996/s  ticks  486/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492374/s  out  493243/s  ticks  482/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492474/s  out  493872/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492506/s  out  492939/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492435/s  out  491978/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492474/s  out  491995/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492441/s  out  491980/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492470/s  out  491994/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492461/s  out  491994/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492553/s  out  492165/s  ticks  487/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492531/s  out  494017/s  ticks  481/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492508/s  out  493796/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492480/s  out  492193/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492434/s  out  491976/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492523/s  out  492021/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492423/s  out  491970/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492471/s  out  491998/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492469/s  out  491994/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492445/s  out  492778/s  ticks  487/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492527/s  out  494297/s  ticks  481/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492515/s  out  493043/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492450/s  out  491985/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492423/s  out  491972/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492487/s  out  492005/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  492523/s  out  492022/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns 4096  entities  4096  in  332100/s  out  411813/s  ticks  480/s  drops 0  rss 831.37 MiB
+conns    0  entities     0  in       0/s  out  135177/s  ticks  488/s  drops 0  rss 831.37 MiB
