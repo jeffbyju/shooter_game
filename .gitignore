@@ -12,3 +12,7 @@ perf.data*
 # working notes, raw benchmark output and scratch directories
 docs/
 geneva-trading/
+
+# only the top-level README is tracked; notes and per-run write-ups stay local
+*.md
+!/README.md
