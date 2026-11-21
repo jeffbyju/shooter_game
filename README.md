@@ -228,21 +228,32 @@ Each client sends an input and a ping per tick, so at N players the server owes
 N x 60 x 2 datagrams/s. Measured against four `c7g.large` generators whose idle
 never fell below 42.7%, so the rig is not the limit:
 
-| threads | players at 95%+ served | peak out /s | cores at peak |
+| configuration | players at 95%+ served | peak out /s | cores |
 |---|---|---|---|
-| 1 | 4,096 | 468,000 | 1.00 |
-| 4 | 7,168 | 820,296 | 3.65 |
-| 8 | ~8,192 | 908,363 | 7.66 |
+| 1 thread | 4,096 | 468,000 | 1.00 |
+| 4 threads | 7,168 | 820,296 | 3.65 |
+| 8 threads | ~8,192 | 908,363 | 7.66 |
+| **6 threads + 2 cores for NIC interrupts** | **~6,100 at 100%** | **950,687** | 8 |
+
+The last row is the best configuration found, and it uses *fewer* worker
+threads than the row above it. Interrupt placement is worth more than two more
+threads.
 
 **The gain is real and sublinear**: 1.75x the players for 3.65x the cores. Per
 core, peak output goes 468k, 225k, 119k -- each doubling of threads buys about
 half again as much and halves the efficiency.
 
-Fitting Amdahl's law to the two speedups gives a non-scaling fraction of 42.7%
-at four threads and 44.6% at eight -- two independent points on the same
-number, so the model fits. **That caps any thread count at 2.27x
-single-threaded, about 1.06M datagrams/s**; sixteen threads would buy ~8% over
-eight. Past that, more threads is not the lever. The 44% is not all simulation
+Fitting Amdahl's law to the unpinned speedups gives a non-scaling fraction of
+42.7% at four threads and 44.6% at eight -- two independent points on one
+number, so the model fits that configuration. It caps *it* at 2.27x
+single-threaded.
+
+But the best placement reaches 2.03x on six threads, where that fit predicts
+1.88x, so the 44% **bundles interrupt contention into the "serial" fraction**.
+Refitting on the placed result gives 39.1% non-scaling and a ceiling of 2.56x,
+about 1.2M datagrams/s. The lesson is that an Amdahl fit measures whatever is
+not scaling, including things you could have fixed -- it is a description of a
+configuration, not a property of the program. Past that, more threads is not the lever. The 44% is not all simulation
 (profiled at ~15% of a core): it also includes barrier wait, the single NIC and
 kernel UDP path beneath the separate sockets, softirq, and shared memory
 bandwidth.
