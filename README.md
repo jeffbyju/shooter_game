@@ -448,6 +448,28 @@ scripts/failover_demo.sh
   unavailable rather than silently returning zeros
 - An `io_uring` readiness backend selectable with `--io-backend`
 
+## What is in `results/`
+
+Raw output for every performance claim above: server logs, generator JSON, and
+the orchestrator script for each campaign, verbatim.
+
+| directory | campaign | the gate, and the caveat that matters |
+|---|---|---|
+| `perf/` | area-of-interest A/B, both profile groupings | 0 lost samples; `--aoi-scan` makes it one binary |
+| `scale/` | single-core capacity ramp | generator idle never below 44% |
+| `ceiling/` | threaded ceiling, 1/4/8 threads | idle never below 42.7%; single 45 s runs, knee bracketed not located |
+| `placement/` | interrupt affinity and softirq | `ethtool` before/after included; receive and transmit softirq share one counter |
+| `reuseport/` | first `--rx-threads` run | **superseded by `ceiling/`** -- its generators sat at 1-3% idle, so its delivery column is the rig's limit, not the server's |
+| `geo/`, `xcontinent/` | clients on three continents | RTT is quantised to one 60 Hz tick, so those figures separate continents but are not network round trips |
+| `world-server/` | sharded TCP campaign | an earlier run of this server was never archived and its numbers are superseded |
+
+Two numbers in this README are **not** backed by anything in `results/`, and
+both say so where they appear: the original `perf` srcline percentages
+(20.9/6.2/13.4%), whose `perf.data` was not kept and whose pre-fix build no
+longer exists in git, and the first `ge_world_server` run.
+
+Everything else can be recomputed from the files in those directories.
+
 ## Known limitations
 
 Scoped by campaign, because two of these used to be stated as if they applied
