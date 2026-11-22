@@ -1,36 +1,38 @@
-# ge_server
+# ge_arena_udp
 
-Two low-latency multiplayer game servers in C++23, sharing one protocol,
-one codec and one set of containers.
+A first-person arena shooter server in C++23, written to find out where the
+time actually goes when you serve a few thousand players from one machine —
+and then to prove it with measurements rather than assert it.
 
-- **`ge_arena_udp`** — a first-person arena shooter over UDP, served from a
-  single core. 2048 players at a sustained 60 Hz.
-- **`ge_world_server`** — a sharded TCP server for the snake mode, acceptor
-  to I/O threads to simulation shards over lock-free rings.
+Players run, jump, fly with jetpacks and shoot each other. One core serves
+2,048 of them at a sustained 60 Hz with full snapshot delivery; eight cores,
+placed correctly, reach **950,687 datagrams/s**.
 
-Built the way a trading system is built: fixed capacity everywhere, no
-allocation on the hot path, lock-free handoff between threads, and a benchmark
-harness that reports where every microsecond goes and refuses to flatter itself.
-
-No third-party dependencies. CMake plus a C++23 compiler. Verified on macOS
-(kqueue, Apple clang 17) and Linux (epoll, GCC 13).
+No third-party dependencies. CMake and a C++23 compiler. Verified on Linux
+(epoll, GCC 14) and macOS (kqueue, Apple clang 17).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ```
 
-The arena shooter needs a server and something to play against:
+## Play it
 
 ```sh
 build/ge_arena_udp --port 9200 --world 400 --aoi 64 &
-build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 8 --seconds 60 &
+build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 8 --seconds 600 &
 build/ge_shooter --host 127.0.0.1 --port 9200 --udp
 ```
 
-WASD and mouse, space to jump, double-tap and hold space for the jetpack,
-click to fire. Cyan powerups are fuel, amber are ammo.
+WASD and mouse to move and look, space to jump, double-tap and hold space for
+the jetpack, click to fire. Cyan pickups are fuel, amber are ammo.
 
-To see the measurement that mattered, on your own machine, in about a minute:
+The client needs SDL3 and the macOS OpenGL framework; without them CMake skips
+it and the bots still work.
+
+## See the measurement that mattered, on your own machine
+
+The original area-of-interest loop is still in the binary behind a flag, so the
+A/B runs from **one build** and a difference cannot be a build difference.
 
 ```sh
 build/ge_arena_udp --port 9200 --world 2000 --aoi 64 --max 2048 &
@@ -38,195 +40,132 @@ build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 256 --seconds 10
 ```
 
 Watch `aoicand/tick` in the server's per-second line, then restart it with
-`--aoi-scan` and run the bots again. The flag restores the original O(n^2)
-area-of-interest loop, so both arms are the same binary. On a laptop that is
-808 against 65,280, and 256 x 255 = 65,280.
+`--aoi-scan` and run the bots again. On a laptop that is **808 against
+65,280** — and 256 × 255 = 65,280, which is what a full scan does by
+definition. About a minute, no cloud account.
 
-```sh
-build/ge_tests                    # 94 tests, 312k assertions
-build/ge_bench                    # component microbenchmarks
-build/ge_loadgen --clients 100    # end-to-end benchmark, server runs in-process
-build/ge_viewer                   # the snake mode, server + 24 bots in the terminal
-```
+## How it works
 
-`ge_viewer` is the quickest way in. It starts a server, connects a crowd of
-snakes, and draws one player's view of the world. Run your head into another
-snake's body and you die; they grow.
+One UDP socket per receive thread, all bound to the same port with
+`SO_REUSEPORT`. The kernel hashes each client's 4-tuple to a fixed socket, so a
+player stays on one thread for its whole session and that thread is the **only
+writer** of its state. The world is shared, so the tick is split by a barrier:
 
 ```
-ge_snake  tick 353  sim 30.0 Hz  snakes 11/15  len 14 kills 2   input->view 15.4 ms
-+------------------------------------------------------------------------------+
-|        Oo                                                                    |
-|         ooo                                             oooooooo             |
-|           o                                          Ooo        ooo          |
-|                          ooooooo                              oO             |
-|                     ooooo       oooooo           oo                          |
-|                    oo          @**    ooooooooo    o                         |
-|                      ****   ooo                                              |
-+------------------------------------------------------------------------------+
-@ you  * your body  O rivals  o their bodies   run into a body and you die
+  all threads   drain own socket until the tick deadline
+  ─────────────────────── barrier ───────────────────────
+  thread 0      apply queued joins, step the world, rebuild the AOI grid
+  ─────────────────────── barrier ───────────────────────
+  all threads   build and send snapshots for their own peers
+  ─────────────────────── barrier ───────────────────────
+  thread 0      evict silent peers, fold counters, report
 ```
 
-It is a real client, not a debug window: it speaks the wire protocol over TCP
-and renders only what the server chose to send it.
+Inputs are applied during the drain phase because each thread only touches its
+own players' entities. Joins mutate the arena and the peer table, so they are
+parked per-thread and applied by thread 0 between barriers. **There is not one
+mutex in the server** — only the barrier's two atomics.
 
-## Architecture
+A datagram's path, end to end:
 
 ```
-clients --> ge_gateway --> ge_world_server xN
-                              acceptor -> I/O threads -> simulation shards
-                                        (lock-free rings both directions)
+ 1  client sends 48 bytes              ShooterInput, UDP
+ 2  kernel hashes the 4-tuple          -> socket k, thread k
+ 3  rx.recv(myfd)                      recvmmsg, up to 64 at once
+ 4  FrameReader::next()                magic, version, length, type
+ 5  peer_table.find(addr)              -> peer slot, O(1)
+ 6  arena.set_input(entity, ...)       writes ONLY this client's entity
+ 7  [barrier] simulate: movement, hitscan, pickups, rebuild grid
+ 8  [barrier] aoi_grid.query_aabb()    visit only nearby cells
+ 9  exact distance test                the grid filters, it does not decide
+10  encode up to 32 PlayerRecords, tx.commit()
+11  tx.flush(myfd)                     sendmmsg, up to 64 datagrams
 ```
 
-`ge_world_server` accepts clients, runs a fixed-rate simulation sharded across
-threads, and streams each client an area-of-interest view of the world.
-`ge_gateway` spreads sessions across world servers with consistent hashing,
-load-aware placement and outlier ejection. `ge_loadgen` offers open-loop load
-and measures the result.
+Steps 3–6 and 8–11 run on every thread at once; step 7 runs on one. **The
+syscalls parallelise and the simulation does not**, which is the whole scaling
+story.
 
-The design constraint is that there is **no mutex on any steady-state path**.
-Each shard owns its entity arrays exclusively, so the tick body has nothing to
-lock and no possibility of a torn read. Threads communicate only through bounded
-single-producer/single-consumer rings.
+### The structures, and why they are shaped that way
 
-### Zero-copy wire protocol
+**`ArenaStore` is struct-of-arrays.** `x_[]`, `y_[]`, `z_[]`, `health_[]` as
+separate contiguous arrays. `step()` touches position and velocity and nothing
+else, so every cache line it loads is entirely useful.
 
-Messages are fixed-layout PODs cast in place from the socket buffer. There is no
-parse step and no allocation. The cast's alignment precondition is enforced as a
-protocol invariant: every frame length must be a multiple of 8 and the parser
-rejects anything else, so a hostile peer cannot desynchronise alignment.
+**`SpatialGrid` is compressed sparse row.** One counting pass, a prefix sum
+into cell offsets, one scatter into a flat index array — not a
+vector-of-vectors. Two linear passes over contiguous memory, zero allocation
+after the first tick.
 
-A `consteval` check proves every message tag maps to exactly one payload struct,
-which makes an unhandled message type a build error rather than a production log
-line.
+**`PeerTable` rebuilds on erase** rather than using tombstones. Eviction
+happens at most once a tick; a lookup happens 200,000 times a second.
 
-### Zero allocations, measured
+**Entities are a dense array with swap-remove**, so iteration is always over
+`[0, size)` with no gaps. An entity's index changes under it, which is why
+`Peer::arena_slot` exists and is fixed up on every removal.
 
-The build interposes global `operator new` and `delete` and counts every call on
-per-thread, cache-line-isolated counters. A 10 second run at 100 clients reports
-**0 steady-state allocations**, 131 for the entire process lifetime. Memory is a
-function of configuration rather than load: every buffer, queue, pool and entity
-array is fixed-capacity and mapped at startup, at 20.1 KiB per connection.
+**Frames are fixed-size and 8-byte aligned.** A `PlayerRecord` is exactly 32
+bytes, with `fuel` and `ammo` in bytes that were already padding. Decoding is a
+bounds check and a cast — no parsing, no allocation.
 
-### Bounded everything
+### Deliberately absent
 
-Every queue has a fixed capacity, so overload is shed and counted rather than
-absorbed into unbounded memory. Command ring full, state deltas dropped, short
-writes, slow clients evicted, parse errors, late ticks and skipped ticks are all
-reported per run. There is no silent loss path.
-
-### A harness that argues against itself
-
-Load is generated **open-loop**: send times come from a schedule fixed before the
-run, so the server cannot throttle its own offered load. Latency is measured from
-when a request was *due*, not when it was sent, which makes the numbers
-coordinated-omission-free. A test demonstrates that without this, a server
-completely unavailable for one second still passes p99, p99.9 and p99.99,
-appearing only as `max`.
-
-Every run prints clock granularity, its own CPU use, and a `RUN VALIDITY` section
-listing reasons to distrust it: major page faults, unpinned threads, insufficient
-samples, undelivered offered load, and measured scheduler interference. The load
-sweep refuses to count rows where the generator was CPU-bound.
+- **No allocation after startup.** The test suite asserts zero steady-state
+  allocations while serving.
+- **No per-peer receive buffer.** A datagram is a whole message, so there is no
+  reassembly state — which is what would make a kernel-bypass transport a
+  drop-in replacement.
+- **No retransmission, acks or ordering.** Losing a snapshot costs one frame of
+  staleness, because the next one is self-contained. A protocol with no retries
+  cannot build a retry storm.
 
 ## Measurements
 
-Two separate campaigns. The arena server was measured on Linux hardware in EC2;
-the component costs and the snake end-to-end figures come from a laptop. They
-are not comparable and are kept apart deliberately.
+All on `c7g.2xlarge` (Graviton3, 8 cores) with load from separate EC2
+instances, never co-located with the server. `out / owed` is what the server
+emitted against what it owes — `players × 60 × 2`, since each client is sent a
+snapshot and a pong per tick. That ratio is internal to the server, so a
+saturated load generator cannot forge it.
 
-### The arena server, one core
-
-`c7g.2xlarge` (Graviton3), one core, 2048 clients on separate instances in the
-same VPC, each client's sends spread across the tick rather than fired in
-lockstep.
+### One core
 
 | | |
 |---|---|
-| players | 2048 at a sustained 60 Hz |
+| players | 2,048 at a sustained 60 Hz |
 | snapshot delivery | 100.00% |
 | datagrams in / out | 249,859 /s and 249,858 /s |
 | server CPU | ~99% of one core |
 | 10-minute soak | RSS flat at 4,544 KB, every error counter 0 |
 
-The CPU figure is the interesting one, because it used to read ~70%. The load
-generator was firing all 2048 clients at the same instant; bursty arrivals are
-cheaper per datagram than smooth ones because one `poll` wake amortises over
-many of them. Staggering the clients moved the identical 249,856 datagrams/s
-from 77% of a core to 99%. The earlier number is withdrawn, not revised.
+Of the 7,305 instructions each datagram costs, **6,091 are kernel**. Simulation
+is 15.2% of the core. The syscall path is what is full, and every optimisation
+below follows from that one measurement.
 
-Of the 7,305 instructions each datagram costs, 6,091 are kernel. Simulation is
-15.2% of the core; the syscall path is what is full.
+### Area of interest, isolated by a runtime flag
 
-Both optimisations that matter are behind runtime flags, so the A/B runs from
-one binary and a difference cannot be a build difference. Median of three runs,
-`[min-max]`:
+Median of 3 runs, `[min–max]`:
 
 | | `--aoi-scan` | grid |
 |---|---|---|
-| AOI distance checks / tick | 4,262,127 `[+-0]` | **39,517** `[39.2-40.1k]` |
-| instructions retired | 188.44 B `[188.3-189.1]` | **91.26 B** `[91.2-91.6]` |
-| simulation CPU | 36.9% `[36.3-37.5]` | **15.2%** `[15.1-16.0]` |
-| snapshots out | 249,857 /s | 249,855 /s |
+| distance checks / tick | 4,262,127 `[±0]` | **39,517** `[39.2–40.1k]` |
+| instructions retired | 188.44 B | **91.26 B** |
+| simulation CPU | 36.9% | **15.2%** |
 
-2048 x 2047 = 4,192,256 is what a full scan does by definition, which is what
-the counter reads. Delivery is identical in both arms: the grid is worth 2.06x
-in instructions, not a delivery win at this load.
+2048 × 2047 = 4,192,256 is what a full scan does by definition, and that is
+what the counter reads. The loop was provably quadratic, not merely slow.
 
-The loop is also visible in a profile, but only if you ask the right way.
-Grouped by function, the whole server is one `main` box worth 16.89% and the
-loop cannot be named at all, because inlining deleted its stack frame. The same
-recording grouped by source line:
+It is also visible in a profile, but only if you ask correctly. Grouped by
+function the whole server is one `main` box worth 16.89% and the loop cannot be
+named at all, because inlining deleted its stack frame. Grouped by source line:
 
 | | `--aoi-scan` | grid |
 |---|---|---|
-| `main.cpp:611-618`, the AOI loop | **10.57%** | **0.00%** |
+| `main.cpp:611-618` | **10.57%** | **0.00%** |
 | all user-space samples | 16.84% | 7.18% |
-| `main` in the symbol view | 16.89% | 6.73% |
 
 Two thirds of all user-space time on four lines, invisible in the default view.
-Raw reports, run script and environment are in [`results/perf/`](results/perf/).
 
-Batching with `recvmmsg`/`sendmmsg` is worth ~10% of cycles at 2048 (49.78 B to
-44.94 B) with no change in delivery. It pays at 4096, where snapshots out go
-from 314,704 to 360,377 /s, +14.5%. The 4096 arms are generator-limited, so
-they are a fair comparison between builds and not a capacity measurement.
-
-### Where one core stops
-
-The 2048 figure came from a single load generator, which left the obvious
-question open: server's limit, or generator's? Three separate generator
-instances, each with its own NIC, and generator idle recorded in every cell:
-
-| clients | in /s | out /s | delivery | p99 | server CPU | gen idle |
-|---|---|---|---|---|---|---|
-| 2048 | 249,611 | 249,611 | 96.8% | 33 ms | 65% | 47.0% |
-| 3072 | 374,739 | 374,762 | 88.5% | 50 ms | 87% | 45.6% |
-| 4096 | 493,436 | 452,605 | 79.8% | 83 ms | ~100% | 44.0% |
-| 5120 | 609,566 | 448,088 | 45.5% | 133 ms | ~100% | 44.7% |
-| 6144 | 698,925 | 452,599 | 25.8% | 217 ms | ~100% | 44.3% |
-
-Generator idle never falls below 44%, so no cell is generator-limited. **Output
-saturates at ~452,600 datagrams/s.** Through 3072 the server sends everything
-it receives; past that, input climbs to 699k/s while output stays pinned.
-
-Degradation is graceful rather than a collapse. At 6144 clients all of them
-still join, no frame is malformed, no send fails, no sequence gap is recorded.
-The server sheds snapshot delivery and tail latency, not service.
-[`results/scale/`](results/scale/).
-
-### Scaling the syscall path with SO_REUSEPORT
-
-The profile said 83% of the per-datagram cost is kernel, and that work is
-per-socket, so it parallelises. `--rx-threads N` opens N sockets on one port
-and lets the kernel hash each datagram's 4-tuple to one of them; a peer is then
-bound to one thread for its session and owns its entity exclusively, so the
-send phase needs no lock. Two barriers separate draining, simulating and
-sending.
-
-Each client sends an input and a ping per tick, so at N players the server owes
-N x 60 x 2 datagrams/s. Measured against four `c7g.large` generators whose idle
-never fell below 42.7%, so the rig is not the limit:
+### Scaling across cores
 
 | configuration | players at 95%+ served | peak out /s | cores |
 |---|---|---|---|
@@ -235,223 +174,157 @@ never fell below 42.7%, so the rig is not the limit:
 | 8 threads | ~8,192 | 908,363 | 7.66 |
 | **6 threads + 2 cores for NIC interrupts** | **~6,100 at 100%** | **950,687** | 8 |
 
-The last row is the best configuration found, and it uses *fewer* worker
-threads than the row above it. Interrupt placement is worth more than two more
-threads.
+The best configuration uses **fewer** worker threads than the row above it.
+Interrupt placement is worth more than two more threads.
 
-**The gain is real and sublinear**: 1.75x the players for 3.65x the cores. Per
-core, peak output goes 468k, 225k, 119k -- each doubling of threads buys about
-half again as much and halves the efficiency.
+Fitting Amdahl to the unpinned runs gives a non-scaling fraction of 42.7% at
+four threads and 44.6% at eight — two independent points on one number. But the
+placed result reaches 2.03× on six threads where that model predicts 1.88×, so
+the 44% had bundled interrupt contention into the "serial" fraction. Refitted,
+39.1% and a ceiling of 2.56×. **An Amdahl fit measures whatever is not scaling
+today, including what you could have fixed.**
 
-Fitting Amdahl's law to the unpinned speedups gives a non-scaling fraction of
-42.7% at four threads and 44.6% at eight -- two independent points on one
-number, so the model fits that configuration. It caps *it* at 2.27x
-single-threaded.
+### Interrupt placement
 
-But the best placement reaches 2.03x on six threads, where that fit predicts
-1.88x, so the 44% **bundles interrupt contention into the "serial" fraction**.
-Refitting on the placed result gives 39.1% non-scaling and a ceiling of 2.56x,
-about 1.2M datagrams/s. The lesson is that an Amdahl fit measures whatever is
-not scaling, including things you could have fixed -- it is a description of a
-configuration, not a property of the program. Past that, more threads is not the lever. The 44% is not all simulation
-(profiled at ~15% of a core): it also includes barrier wait, the single NIC and
-kernel UDP path beneath the separate sockets, softirq, and shared memory
-bandwidth.
+The NIC has eight receive queues, each steerable via `/proc/irq/<n>/smp_affinity`.
+At 8,192 clients:
 
-The cores column is CPU-time, not a core count -- `(utime + stime) / (elapsed x
-100)` from `/proc/PID/stat`, so 7.66 of 8 is 96% occupancy. Treat it as a floor:
-it is per process rather than per thread, tick sampled at 100 Hz where
-`schedstat` offers nanoseconds, and it **excludes softirq**, which is where
-receive processing for 750k packets/s is charged. Threads were not pinned in
-this run and the single-thread baseline came from an earlier run that was, so
-the placement policy is not like-for-like.
+| arm | threads | IRQ cores | out /s | softirq cores |
+|---|---|---|---|---|
+| spread | 8 | all 8 | 793,609 | 1.44 |
+| reserve 1 | 7 | core 0 | **555,669** | **0.92** |
+| reserve 2 | 6 | cores 0–1 | **950,687** | 1.36 |
 
-**Threads also change the shape of failure.** One thread plateaus past its knee
--- 452,605 /s at 4096 clients and 452,599 /s at 6144, the same number twice.
-Four threads peak at 820k and then *fall*: 799k, 653k, 562k, losing a third of
-their throughput while being asked for more. A barrier's cost is set by its
-slowest arrival, so under overload every tick waits for the worst-off thread.
-The synchronisation that makes it faster below the knee makes it fail worse
-above it. [`results/ceiling/`](results/ceiling/).
+**Reserving one core is the worst option available** — worse than doing
+nothing. Eight queues pinned to one core cap softirq at 0.92 cores while the
+work wants 1.4, so the receive path throttles and packets the server could have
+answered never reach it. The ordering is `2 > 0 > 1`, non-monotonic, so one
+data point would have given the wrong rule.
 
-Needs Linux: the design relies on the kernel's 4-tuple hash keeping a peer on
-one socket. macOS spreads one peer across sockets, which makes two threads
-write the same peer, so the server refuses `--rx-threads > 1` there rather than
-pretend. ThreadSanitizer on Linux, 4 threads under real load: 0 races.
-[`results/reuseport/`](results/reuseport/).
+Softirq is also ~25% more productive on dedicated cores (699k datagrams/s per
+softirq core, against 551k when sharing with the game loop).
+
+### Past the knee
+
+One thread plateaus: 452,605 /s at 4,096 clients and 452,599 /s at 6,144 — the
+same number twice under 50% more load. Four threads peak at 820k and then
+*fall*: 799k, 653k, 562k. A barrier costs what its slowest arrival costs, and
+overload makes arrivals uneven, so every tick waits for the worst-off thread.
+**The synchronisation that makes it faster below the knee makes it fail worse
+above it.**
+
+All 6,144 clients still join at 3× the saturating load, with no malformed
+frame, no failed send and no sequence gap. It sheds quality, not service.
 
 ### Over the real internet
 
-256 bots from each of three origins against one server in us-east-2:
+256 clients from each of us-east-2, us-west-2 and eu-west-1 against one server:
 
 | origin | delivery | RTT p50 | inputs unanswered |
 |---|---|---|---|
-| us-east-2, same VPC | 99.5% | 16.7 ms | 0.02% |
+| same VPC | 99.5% | 16.7 ms | 0.02% |
 | us-west-2 | 99.2% | 66.7 ms | 0.07% |
 | eu-west-1 | 99.5% | 83.3 ms | 0.11% |
 
 `bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0` for the whole run.
-The retry, the idempotent re-welcome and the stale-snapshot guard were written
-for loss and reordering a loopback cannot produce; this is the first run that
-put real ones in front of them. [`results/geo/`](results/geo/).
+The hello retry and stale-snapshot guard were written against *injected* loss
+because a loopback cannot produce the real thing; this is the first run that
+put real loss in front of them.
 
-RTT here is quantised to one 60 Hz tick, because a bot polls its socket on its
-own send cadence. True round trips are nearer 50 ms and 75 ms. The instrument
-separates continents; it does not measure a network RTT, and every earlier
-"LAN p50 16.7 ms" was tick quantisation rather than the wire.
+RTT is quantised to one 60 Hz tick, because a bot reads its socket on its own
+send cadence. These figures separate continents; they are not network round
+trips.
 
-### Component costs
+### A server can keep up and still not deliver
 
-Apple M-series, `-O3`, best of seven batches. The allocation counter reads zero
-for every row except the two that exist to allocate.
+At 6,144 clients the server emitted 737,281 /s against 737,280 owed — 100.0% —
+while clients received **69.8%**.
 
-| operation | cost |
-|---|---:|
-| encode a 32-byte frame | 0.75 ns |
-| decode + type-checked view | 0.34 ns |
-| decode + `visit` dispatch | 0.94 ns |
-| encode a snake delta, 16 snakes x 32 points | 199 ns |
-| decode it and walk all 512 points | 483 ns |
-| SPSC ring push+pop, same thread | 7.54 ns |
-| SPSC ring push, 48-byte command | 8.83 ns |
-| byte ring write+peek+pop, 256B | 11.7 ns |
-| slot map find, generation-checked | 0.68 ns |
-| SPSC cross-core round trip | 90.0 ns |
-| arena bump allocate | 0.93 ns |
-| pool acquire + release | 2.36 ns |
-| `malloc` + `free`, same size | 25.4 ns |
-| `operator new` + `delete`, what is avoided | 39.1 ns |
-| histogram record | 3.42 ns |
-| `Clock::now_ns` | 9.99 ns |
-| advance one snake, steer + move | 8.21 ns |
-| spatial grid rebuild, per body point | 1.75 ns |
-| area-of-interest query, radius 64 | 6.72 ns |
+```
+ethtool -S ens5 | grep allowance
+pps_allowance_exceeded   45,997,437 -> 47,521,425   = 47,625 /s discarded
+```
 
-End to end, the snake path over TCP on the same laptop:
+EC2 shapes on **packet rate**, not bandwidth. The hypervisor was discarding
+~47,600 packets/s beyond the instance's allowance, after the kernel had
+accepted them — at 3.4 Gbps of a nominal 15. That accounts for 6.5% of the
+30% gap; the rest is the load generators' own receive paths.
 
-| | |
-|---|---:|
-| server-side service time, frame parsed to reply queued | **2.25 us** p50, 958 ns min |
-| raw loopback `write`/`read` floor, same machine | 10.3 us min |
-| sustained throughput | **78.7K msg/s** at p50 380 us on 2.3 cores |
-| steady-state heap allocations | **0** |
-| resident set / per connection | 11.7 MiB / 20.1 KiB |
-| tests | 94 tests, ~312,600 assertions, clean under ASan+UBSan |
+This is why the protocol counts packets rather than bytes. One datagram per
+player per tick at 60 Hz is 122 packets/s/player, and a quarter of a million
+packets a second arrives long before bandwidth is anywhere near saturated.
 
-Clock overhead is 13 ns and granularity 41 ns on this machine, so batches are
-sized such that neither matters. Any figure within a few multiples of 41 ns
-would be instrument noise rather than signal.
+### Realistic capacity
 
-> The committed benchmark run was collected on a contended laptop: load average
-> rose from 7.8 to 27.8 on 10 cores during collection, and simulation ticks
-> started 11.65 ms late at p99. p50, the server-side figures and the component
-> microbenchmarks hold up. **The p99 and beyond columns in that run are scheduler
-> noise, not server behaviour, and should not be quoted.** Re-run
-> `scripts/run_bench.sh` on an idle machine for publishable tails.
+| | players | 64-player matches |
+|---|---|---|
+| lab peak, 100% CPU, uniform spread | 7,922 | 124 |
+| fully served | 6,100 | 95 |
+| **70% CPU + combat clustering** | **~4,400** | **~69** |
 
-## What the measurements changed
+The last row is the one to quote. Production does not run at 100% CPU, and real
+players cluster into chokepoints where uniformly-spread bots do not. The 20%
+clustering derate is an estimate, not a measurement.
 
-The first end-to-end run showed p50 = 163 us while the server's own service time
-was 1.9 us. A one-way decomposition placed **121 us of it before the server saw
-the bytes**: the I/O thread was waking from a deep idle core. Raising offered
-load to 50k msg/s, which keeps cores hot, dropped p50 to 28 us with a 9.4 us
-floor, confirming it. Optimising the 1.9 us handler would have bought about 1%.
+The cheapest way to double it is not more machines: every player costs 120
+datagrams/s because pings are answered separately from snapshots. Fold the pong
+into the snapshot and the same box holds ~8,900 players.
 
-That produced the adaptive spin option (`--spin-us`) and a results table showing
-both sides of the trade rather than a single flattering number. It also produced
-an honest caveat: on a contended machine, spinning threads compete with
-everything else and the tail gets *worse*. Spinning pays only when you own the
-cores.
+## Running it properly
 
-The same sweep found three real defects that hand-testing had not: a heap
-corruption when a `Disconnect` shared a TCP segment with later frames, a
-connection slot-and-buffer leak on close, and a latent cross-thread
-use-after-free caused by an object pool threading its free list through the
-freed object's file descriptor. All three are fixed and each has a regression
-test verified to fail without its fix.
+```sh
+# the server
+build/ge_arena_udp --port 9200 --world 2000 --aoi 64 --max 2048 [--rx-threads N]
 
-Two of the instruments were wrong as well. `poll()` wait time was being counted
-as work, and Darwin's involuntary context-switch counter turned out to track
-blocking syscalls rather than preemption: a pure spin loop on an idle machine
-baselines near 700/s while the counter reported 190,000/s. Scheduler
-interference is now judged from measured tick jitter instead.
+# load, from a different machine
+build/ge_shooter_bots --host SERVER --port 9200 --udp --bots 2048 --seconds 60 --json
+
+# A/B the two optimisations that matter, from one binary
+build/ge_arena_udp --aoi-scan    # the original O(n^2) area-of-interest loop
+build/ge_arena_udp --batch 1     # one recvfrom/sendto per datagram
+
+# tests and microbenchmarks
+build/ge_tests                   # 94 tests, 312k assertions
+build/ge_bench
+```
+
+`--rx-threads > 1` **requires Linux.** The design relies on the kernel hashing
+a peer's 4-tuple to a fixed socket. macOS accepts `SO_REUSEPORT` and then
+spreads one peer across sockets, which puts two threads on one peer record —
+found by ThreadSanitizer, and a correctness bug rather than a slowdown. The
+server refuses rather than pretending.
+
+For the best configuration, pin the NIC's interrupts and keep threads off those
+cores:
+
+```sh
+for i in $(seq 56 63); do echo 3 | sudo tee /proc/irq/$i/smp_affinity; done
+taskset -c 2-7 build/ge_arena_udp --rx-threads 6 ...
+```
 
 ## Layout
 
 ```
-include/ge/
-  core/        platform facade, monotonic clock, thread naming/QoS, PRNG, topology
-  alloc/       bump arena, object pool, global allocation probe
-  container/   SPSC ring, SPSC variable-length byte ring, MPMC queue, slot map
-  proto/       wire structs + compile-time invariants; zero-copy codec
-  net/         socket options, kqueue/epoll/io_uring reactor, buffered connection
-  world/       SoA entity store, CSR spatial grid, snake store, simulation shard
-  lb/          consistent hash ring, P2C placement, outlier ejection
-  metrics/     HDR histogram, counters, process resource usage, perf counters
-  server/      world server: acceptor + I/O threads + shards
-  bench/       load generator, report rendering
-apps/          ge_world_server, ge_gateway, ge_loadgen, ge_viewer,
-               ge_arena_udp, ge_shooter, ge_shooter_bots
-bench/         component microbenchmarks
-apps/arena_udp/       single-core UDP arena server
-apps/shooter_client/  SDL3 + OpenGL client, and the shared NetClient
-apps/shooter_bots/    headless clients: functional test and load generator
-tests/         94 tests: containers, protocol + mutation fuzzing, allocators,
-               histogram, balancer, grid, shard lifecycle, server lifecycle,
-               arena shard, client linear algebra
-scripts/       run_bench.sh, failover_demo.sh, make_results.py, snake_multiplayer.sh
+apps/arena_udp/        the server: sockets, threads, tick loop  (~900 lines)
+apps/shooter_client/   SDL3 + OpenGL client, and the shared NetClient
+apps/shooter_bots/     headless clients: functional test and load generator
+include/ge/proto/      wire structs with compile-time invariants, zero-copy codec
+include/ge/world/      SoA entity store, CSR spatial grid, pickups
+include/ge/core/       monotonic clock, PRNG, thread naming
+include/ge/metrics/    HDR histogram, per-thread counters
+tests/                 94 tests: protocol + mutation fuzzing, grid, arena,
+                       allocators, client linear algebra
+results/               raw output behind every number above
 ```
 
-## Usage
-
-```sh
-# Play against bots. WASD or arrows to steer, q to quit.
-build/ge_viewer
-
-# Multiplayer: starts a shared world and prints the command each player runs
-scripts/snake_multiplayer.sh
-
-# The arena shooter, single core over UDP
-build/ge_arena_udp --port 9200 --world 2000 --aoi 64 --max 2048
-
-# ...and the load generator that doubles as its functional test
-build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 512 --seconds 60
-
-# A/B the two optimisations that matter, from one binary
-build/ge_arena_udp --aoi-scan     # the original O(n^2) area-of-interest loop
-build/ge_arena_udp --batch 1      # one recvfrom/sendto per datagram
-
-# Standalone snake server
-build/ge_world_server --port 7777 --io-threads 2 --shards 4
-
-# Gateway across two backends
-build/ge_gateway --port 8080 --backends 127.0.0.1:7777,127.0.0.1:7778
-
-# Benchmark: in-process server, 200 clients, JSON report
-build/ge_loadgen --clients 200 --duration 15 --json out.json
-
-# Latency versus offered throughput
-scripts/run_bench.sh
-
-# Backend failure and recovery
-scripts/failover_demo.sh
-```
-
-## Production-oriented features
-
-- `SO_REUSEPORT` per-thread listeners, so the kernel load-balances accepts
-  across I/O threads instead of funnelling them through one acceptor
-- NUMA-aware CPU topology discovery and thread pinning, preferring physical
-  cores before SMT siblings, with first-touch memory placement
-- Hardware performance counters via `perf_event_open` (cycles, instructions,
-  cache references and misses, branches and misses), reporting why they are
-  unavailable rather than silently returning zeros
-- An `io_uring` readiness backend selectable with `--io-backend`
+The repository also contains `ge_world_server` (a sharded TCP server) and
+`ge_gateway`, from an earlier snake game that shares this protocol and codec.
+They are not what the measurements above are about.
 
 ## What is in `results/`
 
-Raw output for every performance claim above: server logs, generator JSON, and
-the orchestrator script for each campaign, verbatim.
+Raw server logs, generator JSON and the orchestrator script for each campaign,
+verbatim.
 
 | directory | campaign | the gate, and the caveat that matters |
 |---|---|---|
@@ -459,81 +332,47 @@ the orchestrator script for each campaign, verbatim.
 | `scale/` | single-core capacity ramp | generator idle never below 44% |
 | `ceiling/` | threaded ceiling, 1/4/8 threads | idle never below 42.7%; single 45 s runs, knee bracketed not located |
 | `placement/` | interrupt affinity and softirq | `ethtool` before/after included; receive and transmit softirq share one counter |
-| `reuseport/` | first `--rx-threads` run | **superseded by `ceiling/`** -- its generators sat at 1-3% idle, so its delivery column is the rig's limit, not the server's |
-| `geo/`, `xcontinent/` | clients on three continents | RTT is quantised to one 60 Hz tick, so those figures separate continents but are not network round trips |
-| `world-server/` | sharded TCP campaign | an earlier run of this server was never archived and its numbers are superseded |
+| `reuseport/` | first `--rx-threads` run | **superseded by `ceiling/`** — its generators sat at 1–3% idle, so its delivery column is the rig's limit, not the server's |
+| `geo/`, `xcontinent/` | clients on three continents | RTT quantised to one tick |
+| `world-server/` | the sharded TCP server, for comparison | an earlier run of it was never archived |
 
-Two numbers in this README are **not** backed by anything in `results/`, and
-both say so where they appear: the original `perf` srcline percentages
-(20.9/6.2/13.4%), whose `perf.data` was not kept and whose pre-fix build no
-longer exists in git, and the first `ge_world_server` run.
-
-Everything else can be recomputed from the files in those directories.
+Two numbers above are **not** backed by anything in `results/`: the original
+`perf` srcline percentages (20.9/6.2/13.4%), whose `perf.data` was not kept and
+whose pre-fix build no longer exists in git, and the first `ge_world_server`
+run. Everything else can be recomputed from those directories.
 
 ## Known limitations
 
-Scoped by campaign, because two of these used to be stated as if they applied
-to everything.
-
-The arena server:
-
 - **No client prediction, interpolation or lag compensation.** All three are
   standard in shipped games. Their absence is what makes the latency numbers
-  honest, and it is also why it feels worse than a commercial title.
-  Interpolation is the largest available quality win and is client-only.
+  honest, and also why it feels worse than a commercial title. Interpolation is
+  the biggest available quality win — roughly 80 lines, client-only.
 - **No authentication, encryption or anti-cheat.** The server trusts everything
-  it is told except movement speed. Do not call it production-ready.
-- **One server process, one core, one region.** Clients have been driven from
-  three regions, but there is still a single server: no failover, no
-  persistence, no routing. Nothing survives a restart.
-- **No kernel bypass and no busy-poll.** No `SO_BUSY_POLL`, no AF_XDP, no DPDK.
-  `SO_REUSEPORT` took the syscall path as far as threads can; past that the
-  remaining kernel cost needs a different transport, and that is not done.
-- **The ceiling cells are single 45 s runs, not medians.** The shape -- rise,
-  peak, collapse -- is far larger than run-to-run noise, but the individual
-  figures are not tight and the knee is bracketed (6,144-7,168 for four
-  threads) rather than located.
-- **Eight receive threads on an eight-core box** leaves nothing for interrupt
-  handling, so part of the 8-thread cost is that rather than the design.
-- **Branch misses doubled** at 2048 after the area-of-interest fix, 28.1 M to
-  58.2 M. Hash probing and grid-cell iteration replacing a perfectly predicted
-  linear scan is the plausible explanation. It is unverified, so it is not
-  asserted.
-- **Latency is quantised to one tick.** A bot reads its socket on its own
-  60 Hz cadence, so no RTT finer than 16.67 ms can be resolved. Good enough to
-  separate continents, not good enough to quote a network RTT.
-- **Capacity and geography were measured separately.** The ceiling run is
-  single-region; the cross-region run is well inside the ceiling. Nothing here
-  measures a loaded server with distant clients.
-
-The snake path and the component figures:
-
-- **Laptop, unpinned, and the machine was contended.** See the caveat above the
-  end-to-end table. p50 and the component microbenchmarks hold; p99 and beyond
-  describe the machine.
-- **Loopback.** No NIC, driver or switch in any of those numbers.
-- **The `io_uring` path is unvalidated.** It compiles and is selectable but
-  defaults to off and has never been run on a machine with io_uring. Note also
-  that io_uring is not kernel bypass; the kernel TCP stack is still in the path.
-
-Throughout:
-
+  it is told except movement speed. Not production-ready.
+- **One server process, one region.** No failover, no persistence, no
+  matchmaking. Nothing survives a restart.
+- **No kernel bypass and no busy-poll.** `SO_REUSEPORT` took the syscall path as
+  far as threads go; the remaining kernel cost needs a different transport.
+- **Interrupt affinity is not set by the server.** The best configuration needs
+  it done by hand, and the default spread is ~17% worse.
+- **Branch misses doubled** at 2,048 after the AOI fix (28.1 M → 58.2 M).
+  Plausibly hash probing replacing a perfectly predicted linear scan —
+  **unverified**, so not asserted.
+- **Latency is quantised to one tick**, so no RTT finer than 16.67 ms can be
+  resolved.
+- **Ceiling and placement cells are single 45 s runs**, not medians. The shapes
+  are robust; individual figures are not tight.
 - **Endianness is not handled.** Little-endian is assumed everywhere.
-- **The gateway does not front the UDP path.**
-- **Fuzzing is mutation-based, not coverage-guided**, and no sanitizers run in
-  CI.
-- **`include/ge/container/slot_map.hpp` is dead code with a test suite.**
 
 ## Next steps
 
-- Cut syscalls, since that is where 83% of the per-datagram cost is: a
-  `SO_REUSEPORT` receive thread per core first, then busy-poll, then AF_XDP
-- Snapshot interpolation on the client, which is the biggest felt-quality gain
-  available and is roughly 80 lines
-- Re-collect the snake and component figures on idle, pinned Linux so the two
-  campaigns stop being incomparable
-- Validate the `io_uring` backend on a box that has it and benchmark it against
-  epoll
-- Spatial rather than session-hash sharding, so interacting entities share a
-  shard -- worth doing only once the syscall path stops being the bottleneck,
-  since simulation is currently 15% of a core
+- Cut packets per player: fold the pong into the snapshot (2×), then drop
+  distant players to 30 or 20 Hz (4–6×)
+- Ship the interrupt placement instead of requiring it by hand
+- Snapshot interpolation on the client
+- Real io_uring: the current backend uses `IORING_OP_POLL_ADD` only, so it
+  learns which sockets are ready and then does ordinary reads and writes.
+  Batched `RECV`/`SEND`, SQPOLL and multishot are unimplemented
+- Kernel bypass, since 83% of the per-datagram cost is kernel
+- A fleet manager rather than an autoscaling group: game servers are stateful,
+  so scale-in has to drain before it terminates
