@@ -289,24 +289,52 @@ throughout -- so the server-side figures above stand as measured.
 
 ### Realistic capacity
 
-| | players | 64-player matches |
+Three limits, and the one that binds is not the obvious one:
+
+| limit | rate | players |
 |---|---|---|
-| lab peak, 100% CPU, uniform spread | 7,922 | 124 |
-| fully served | 6,100 | 95 |
-| **70% CPU + combat clustering** | **~4,400** | **~69** |
+| CPU ceiling, best placement | 950,687 /s | 7,922 |
+| 70% CPU headroom | 665,481 /s | 5,546 |
+| **where packet drops begin** | **623,649 /s** | **5,197** |
+| 80% of drop onset, sustained | 498,919 /s | 4,158 |
 
-The last row is the one to quote. Production does not run at 100% CPU, and real
-players cluster into chokepoints where uniformly-spread bots do not. The 20%
-clustering derate is an estimate, not a measurement.
+**The packet allowance binds before CPU does**, so a sustained deployment
+should be sized against the drop onset rather than against cores. ~4,000-4,200
+players per instance is the figure to quote: it sits ~20% under where drops
+begin, and the allowance is credit-based so a burst spends what a quiet period
+earned.
 
-It also sits well under where packet drops begin: ~4,400 players need 528,000
-datagrams/s, and the ramp shows zero drops through 499,711/s and 105/s at
-623,649/s. Sizing a sustained deployment below the onset is the point, since
-the allowance is credit-based and a burst spends what a quiet period earned.
+#### Clustering costs much less than expected
 
-The cheapest way to double it is not more machines: every player costs 120
-datagrams/s because pings are answered separately from snapshots. Fold the pong
-into the snapshot and the same box holds ~8,900 players.
+An earlier version of this README applied a **20% derate for combat
+clustering**, on the reasoning that real players pile into chokepoints while
+test bots spread out. That was an estimate. Measured
+([`results/density/`](results/density/)), at 4,096 clients with only the world
+size varying:
+
+| world | density | AOI candidates / player | cores |
+|---|---|---|---|
+| 2000 | 1,024 | 37 | 2.51 |
+| 1000 | 4,096 | 140 | **2.49** |
+| 500 | 16,384 | 501 | 2.85 |
+| 250 | 65,536 | 1,625 | 3.00 |
+
+**A 64x density increase costs 20% more CPU**, and 4x density -- more
+clustering than a real match produces -- costs nothing measurable. The server
+served 100%+ of what it owed at every density.
+
+So the 20% was roughly the cost of a 64x pile-up, applied to the ordinary case.
+It is cheap because density multiplies candidate *tests* (a predictable scan
+over contiguous floats), while `kMaxAoiPlayers` caps snapshots at 32 records
+and **packet count does not change with density at all**. On a server whose
+limit is the network, more crowding is nearly free.
+
+#### Threads are evenly loaded below the knee
+
+The same run collected per-thread CPU: `0.51 0.51 0.50 0.50 0.50 0.49` cores.
+Even to within 4%. The convoy effect this project describes under overload is a
+property of being past the knee, not of the design -- previously inferred from
+the overload curve, now observed directly.
 
 ## Running it properly
 

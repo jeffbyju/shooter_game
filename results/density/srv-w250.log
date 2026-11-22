@@ -1,0 +1,28 @@
+ge_arena_udp on 0.0.0.0:9200 -- 60 Hz, world 250, aoi 64, max 8192 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 4096  in 281191/s  out 282931/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 10.1 tx 62.0  aoicand/tick 3923913
+players 4096  in 515447/s  out 515772/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.3 tx 62.1  aoicand/tick 6809596
+players 4096  in 499714/s  out 499712/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 2.6 tx 62.1  aoicand/tick 6824754
+players 4096  in 491518/s  out 491520/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 2.8 tx 62.1  aoicand/tick 6810409
+players 4096  in 491530/s  out 491525/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.6 tx 62.1  aoicand/tick 6616257
+players 4096  in 507892/s  out 507898/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 2.9 tx 62.1  aoicand/tick 6664682
+players 4096  in 491528/s  out 491524/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 2.8 tx 62.1  aoicand/tick 6701393
+players 4096  in 499707/s  out 499709/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.4 tx 62.1  aoicand/tick 6628231
+players 4096  in 491525/s  out 491523/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.0 tx 62.1  aoicand/tick 6567513
+players 4096  in 499710/s  out 499711/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 2.9 tx 62.1  aoicand/tick 6566503
+players 4096  in 491515/s  out 491517/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.1 tx 62.1  aoicand/tick 6520195
+players 4096  in 499716/s  out 499714/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.1 tx 62.1  aoicand/tick 6523187
+players 4096  in 491523/s  out 491522/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 2.9 tx 62.1  aoicand/tick 6620827
+players 4096  in 491517/s  out 491518/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.1 tx 62.1  aoicand/tick 6705445
+players 4096  in 499703/s  out 499708/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.0 tx 62.1  aoicand/tick 6685659
+players 4096  in 491527/s  out 491523/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.0 tx 62.1  aoicand/tick 6664150
+players 4096  in 499717/s  out 499715/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  dg/syscall rx 3.1 tx 62.1  aoicand/tick 6656307
+players 4096  in 491509/s  out 491514/s  joins 4096  bad 0  sendfail 0  nosession 2035  inputgaps 0  rewelcome 0  d
