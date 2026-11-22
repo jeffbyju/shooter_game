@@ -6,7 +6,7 @@ and then to prove it with measurements rather than assert it.
 
 Players run, jump, fly with jetpacks and shoot each other. One core serves
 2,048 of them at a sustained 60 Hz with full snapshot delivery; eight cores,
-placed correctly, reach **950,687 datagrams/s**.
+placed correctly, reach **over a million datagrams/s**.
 
 No third-party dependencies. CMake and a C++23 compiler. Verified on Linux
 (epoll, GCC 14) and macOS (kqueue, Apple clang 17).
@@ -172,10 +172,26 @@ Two thirds of all user-space time on four lines, invisible in the default view.
 | 1 thread | 4,096 | 468,000 | 1.00 |
 | 4 threads | 7,168 | 820,296 | 3.65 |
 | 8 threads | ~8,192 | 908,363 | 7.66 |
-| **6 threads + 2 cores for NIC interrupts** | **~6,100 at 100%** | **950,687** | 8 |
+| 6 threads + 2 cores for NIC interrupts | ~6,100 at 100% | 950,687 | 8 |
+| **the same, after padding per-thread counters** | **8,192 at 100%** | **1,064,113** | 5.63 |
 
-The best configuration uses **fewer** worker threads than the row above it.
-Interrupt placement is worth more than two more threads.
+Two findings sit in that table. **Interrupt placement beats adding threads** --
+the fourth row uses fewer worker threads than the third and goes faster. And
+**padding per-thread counters to a cache line**, a one-word change, moved the
+peak from 950,687 to 1,064,113 /s and the fully-served count from ~6,100 to
+8,192.
+
+The last row is HEAD. The rows above were measured before that fix; the
+comparisons *between them* remain valid, but they do not describe the code in
+this repository today.
+
+| clients (HEAD) | out /s | out / owed | cores |
+|---|---|---|---|
+| 8,192 | 983,037 | **100.0%** | 5.02 |
+| 10,240 | **1,064,113** | 86.6% | 5.63 |
+| 12,288 | 928,909 | 63.1% | 5.92 |
+
+[`results/head-verify/`](results/head-verify/).
 
 Fitting Amdahl to the unpinned runs gives a non-scaling fraction of 42.7% at
 four threads and 44.6% at eight — two independent points on one number. But the
@@ -292,7 +308,7 @@ Three limits, and the one that binds is not the obvious one:
 
 | limit | rate | players |
 |---|---|---|
-| CPU ceiling, best placement | 950,687 /s | 7,922 |
+| CPU ceiling, best placement (HEAD) | 1,064,113 /s | 8,867 |
 | 70% CPU headroom | 665,481 /s | 5,546 |
 | **where packet drops begin** | **623,649 /s** | **5,197** |
 | 80% of drop onset, sustained | 498,919 /s | 4,158 |
