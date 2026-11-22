@@ -401,6 +401,8 @@ verbatim.
 | `reuseport/` | first `--rx-threads` run | **superseded by `ceiling/`** — its generators sat at 1–3% idle, so its delivery column is the rig's limit, not the server's |
 | `geo/`, `xcontinent/` | clients on three continents | RTT quantised to one tick |
 | `world-server/` | the sharded TCP server, for comparison | an earlier run of it was never archived |
+| `pps-cap/` | where the packet allowance starts dropping | the allowance is a token bucket, so a run's history changes what it sees |
+| `density/` | what crowding costs, world size swept | uniform density, not a local knot; single 40 s cells |
 
 Two numbers above are **not** backed by anything in `results/`: the original
 `perf` srcline percentages (20.9/6.2/13.4%), whose `perf.data` was not kept and
