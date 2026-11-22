@@ -618,3 +618,67 @@ GE_TEST(proto_reader_survives_truncation_at_every_offset) {
     for (std::size_t cut = 0; cut <= n; cut += 8) drain(buf, cut);
     CHECK(true);
 }
+
+// ---------------------------------------------------------------- join path
+//
+// The join handshake had two bugs that a unit test would have caught before a
+// load test did: the client sent ClientHello once and never retried, and the
+// server dropped a repeat hello from a peer it already knew. Both are
+// round-trip properties of the protocol, not of the network, so they belong
+// here. See docs/guide/13-known-defects.md.
+
+GE_TEST(hello_round_trips_through_encode_and_decode) {
+    alignas(8) std::byte buf[proto::kMaxFrameBytes];
+    const proto::ClientHello sent{0xDEADBEEFCAFEF00Dull, proto::kProtocolVersion, 7};
+    const std::size_t n = proto::encode(buf, sent, 0, 0, 0);
+    GE_CHECK(n > 0);
+
+    proto::FrameReader r({buf, n});
+    proto::FrameView f;
+    GE_CHECK(r.next(f) == proto::ParseError::Ok);
+    GE_CHECK(f.type() == proto::MsgType::ClientHello);
+
+    const auto* got = f.as<proto::ClientHello>();
+    GE_CHECK(got != nullptr);
+    GE_CHECK(got->nonce == sent.nonce);
+    GE_CHECK(got->protocol == sent.protocol);
+    GE_CHECK(got->region_hint == sent.region_hint);
+}
+
+GE_TEST(welcome_carries_what_a_client_cannot_deduce) {
+    // A client that cannot read world_size, aoi and tick_hz off the welcome has
+    // to guess them, and a wrong guess looks like an empty world rather than a
+    // misconfiguration. Pin that they survive the round trip intact.
+    alignas(8) std::byte buf[proto::kMaxFrameBytes];
+    const std::uint32_t session = 4242;
+    const proto::ServerWelcome sent{ge::core::mix64(session), session,
+                                    2000.0f, 64.0f, 3, 8, 60, 0, 0};
+    const std::size_t n = proto::encode(buf, sent, session, 0,
+                                        std::uint8_t(proto::FrameFlags::ServerSent));
+    GE_CHECK(n > 0);
+
+    proto::FrameReader r({buf, n});
+    proto::FrameView f;
+    GE_CHECK(r.next(f) == proto::ParseError::Ok);
+    GE_CHECK(f.type() == proto::MsgType::ServerWelcome);
+    GE_CHECK(f.header().session == session);
+
+    const auto* got = f.as<proto::ServerWelcome>();
+    GE_CHECK(got != nullptr);
+    GE_CHECK(got->session_id == session);
+    GE_CHECK(got->session_key == ge::core::mix64(session));
+    GE_CHECK(got->world_size == 2000.0f);
+    GE_CHECK(got->aoi_radius == 64.0f);
+    GE_CHECK(got->tick_hz == 60);
+}
+
+GE_TEST(a_repeated_hello_is_byte_identical_so_a_retry_is_idempotent) {
+    // The client retries its hello on a timer. If two encodings of the same
+    // hello differed, the server could not treat the second as a retry.
+    alignas(8) std::byte a[proto::kMaxFrameBytes], b[proto::kMaxFrameBytes];
+    const proto::ClientHello h{0x1234ull, proto::kProtocolVersion, 0};
+    const std::size_t na = proto::encode(a, h, 0, 0, 0);
+    const std::size_t nb = proto::encode(b, h, 0, 0, 0);
+    GE_CHECK(na == nb);
+    GE_CHECK(std::memcmp(a, b, na) == 0);
+}
