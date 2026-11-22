@@ -16,6 +16,7 @@
 #include <atomic>
 #include <thread>
 #include <memory>
+#include <new>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -49,6 +50,14 @@ inline constexpr std::uint32_t kNoSlot = 0xffffffffu;
 // is also how the A/B works -- same binary, --batch picks the path, so a
 // difference cannot be a build difference.
 inline constexpr int kMaxBatch   = 128;
+// std::hardware_destructive_interference_size where the library offers it.
+// Apple clang does not, and 64 is right for every target this runs on.
+#ifdef __cpp_lib_hardware_interference_size
+inline constexpr std::size_t kCacheLine = std::hardware_destructive_interference_size;
+#else
+inline constexpr std::size_t kCacheLine = 64;
+#endif
+
 inline constexpr int kRxSlotSize = 2048;   // >> the largest client frame (48 B)
 
 #if defined(__linux__)
@@ -320,7 +329,13 @@ struct PendingJoins {
     void clear() { size = 0; }
 };
 
-struct Stats {
+// Padded to a cache line, and the padding is load-bearing. sizeof(Stats) was
+// 120 bytes in a std::vector<Stats>, so with 64-byte lines thread k's tail and
+// thread k+1's head sat in the same line: every datagram counted by one thread
+// invalidated the next thread's counters, in the hottest loop in the server.
+// Counters are per-thread precisely to avoid sharing; unaligned, they shared
+// anyway.
+struct alignas(kCacheLine) Stats {
     std::uint64_t datagrams_in = 0, datagrams_out = 0, bad = 0;
     std::uint64_t joins = 0, inputs = 0, pings = 0, send_fail = 0;
     // Welcomes re-sent because a hello arrived from a peer we already know,

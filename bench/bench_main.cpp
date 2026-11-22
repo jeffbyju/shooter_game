@@ -191,6 +191,63 @@ void bench_protocol() {
 }
 
 // --------------------------------------------------------------- containers
+// ---------------------------------------------------------------- false sharing
+//
+// Per-thread counters exist so that threads do not contend. That only holds if
+// they land on different cache lines. The arena server's Stats was 120 bytes in
+// a vector, so with 64-byte lines thread k's tail shared a line with thread
+// k+1's head, and every increment invalidated a neighbour -- in the hottest
+// loop in the server. This measures the cost of that mistake directly: the
+// identical loop, run on a shared layout and a padded one.
+void bench_false_sharing() {
+    constexpr std::uint64_t kIters = 20'000'000;
+    const unsigned nthreads =
+        std::min(4u, std::max(2u, std::thread::hardware_concurrency()));
+
+    struct Unpadded { std::uint64_t n = 0; };
+    struct alignas(128) Padded { std::uint64_t n = 0; };  // 128: Apple Silicon's line
+
+    auto run = [&](auto* slots) {
+        std::atomic<bool> go{false};
+        std::vector<std::thread> ts;
+        ts.reserve(nthreads);
+        for (unsigned t = 0; t < nthreads; ++t)
+            ts.emplace_back([&, t] {
+                while (!go.load(std::memory_order_acquire)) { }
+                for (std::uint64_t i = 0; i < kIters; ++i) {
+                    slots[t].n += 1;                 // only ever its OWN counter
+                    // Without this the compiler collapses the loop to one add
+                    // and the benchmark measures nothing. The server's own
+                    // counters survive because syscalls sit between them.
+                    asm volatile("" ::: "memory");
+                }
+            });
+        const auto t0 = ge::core::Clock::now_ns();
+        go.store(true, std::memory_order_release);
+        for (auto& th : ts) th.join();
+        return double(ge::core::Clock::now_ns() - t0);
+    };
+
+    std::vector<Unpadded> shared(nthreads);
+    std::vector<Padded>   padded(nthreads);
+    // Best of 5: a single pair of runs swung by 70% on a laptop.
+    double per_shared = 1e30, per_padded = 1e30;
+    for (int r = 0; r < 5; ++r) {
+        per_shared = std::min(per_shared, run(shared.data()) / double(kIters));
+        per_padded = std::min(per_padded, run(padded.data()) / double(kIters));
+    }
+
+    std::printf("  %-44s %8.3f ns\n", "counter++ sharing a cache line", per_shared);
+    std::printf("  %-44s %8.3f ns   alignas(128)\n", "counter++ on its own line", per_padded);
+    std::printf("  %-44s %8.2fx\n", "cost of false sharing",
+                per_padded > 0.0 ? per_shared / per_padded : 0.0);
+    std::printf("  %u threads, each touching only its own counter; the sole\n"
+                "  difference is whether those counters share a line.\n", nthreads);
+    std::printf("  Plain stores, not atomics. The effect is modest on cores with\n"
+                "  deep store buffers and large lines (Apple Silicon is 128 B) and\n"
+                "  larger where lines are 64 B. Measure it on the target.\n");
+}
+
 void bench_containers() {
     section("LOCK-FREE CONTAINERS");
 
@@ -422,6 +479,7 @@ int main(int argc, char** argv) {
     if (want("allocation")) bench_allocation();
     if (want("metrics"))    bench_metrics();
     if (want("world"))      bench_world();
+    if (want("sharing"))    bench_false_sharing();
 
     std::printf("\n  %zu cases. A non-zero allocation column outside the malloc/new cases\n"
                 "  means something on that path is still reaching the heap.\n\n", g_results.size());
