@@ -50,10 +50,22 @@ inline constexpr std::uint32_t kNoSlot = 0xffffffffu;
 // is also how the A/B works -- same binary, --batch picks the path, so a
 // difference cannot be a build difference.
 inline constexpr int kMaxBatch   = 128;
-// std::hardware_destructive_interference_size where the library offers it.
-// Apple clang does not, and 64 is right for every target this runs on.
-#ifdef __cpp_lib_hardware_interference_size
-inline constexpr std::size_t kCacheLine = std::hardware_destructive_interference_size;
+// Cache line size, for padding per-thread state apart.
+//
+// std::hardware_destructive_interference_size looks like the right answer and
+// is not sufficient on its own: libc++ reports 64 on Apple Silicon, where
+// `sysctl hw.cachelinesize` says 128. It is a compile-time guess baked into
+// the library, not a property of the machine, so it is treated here as a floor
+// rather than an answer. Getting this wrong is silent -- padding to 64 on a
+// 128-byte-line machine leaves two threads sharing a line while the code reads
+// as though it had solved the problem.
+#if defined(__APPLE__) && defined(__aarch64__)
+inline constexpr std::size_t kCacheLine = 128;      // verified via sysctl
+#elif defined(__cpp_lib_hardware_interference_size)
+inline constexpr std::size_t kCacheLine =
+    std::hardware_destructive_interference_size < 64
+        ? std::size_t(64)
+        : std::hardware_destructive_interference_size;
 #else
 inline constexpr std::size_t kCacheLine = 64;
 #endif

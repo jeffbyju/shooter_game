@@ -177,9 +177,18 @@ Two thirds of all user-space time on four lines, invisible in the default view.
 
 Two findings sit in that table. **Interrupt placement beats adding threads** --
 the fourth row uses fewer worker threads than the third and goes faster. And
-**padding per-thread counters to a cache line**, a one-word change, moved the
-peak from 950,687 to 1,064,113 /s and the fully-served count from ~6,100 to
-8,192.
+**padding per-thread counters to a cache line** is worth about 12%, confirmed
+by a controlled A/B: both binaries built on one instance from one tree with a
+one-line diff, run interleaved, three cells each.
+
+| variant | median out /s | range |
+|---|---|---|
+| padded | **865,842** | 828,614 - 974,915 |
+| unpadded | 768,326 | 750,629 - 817,384 |
+
+**+12.7%, with no overlap between the arms.**
+[`results/cacheline-ab/`](results/cacheline-ab/). The earlier uncontrolled
+before/after gave the same figure, but could not attribute it.
 
 The last row is HEAD. The rows above were measured before that fix; the
 comparisons *between them* remain valid, but they do not describe the code in
@@ -442,6 +451,8 @@ verbatim.
 | `world-server/` | the sharded TCP server, for comparison | an earlier run of it was never archived |
 | `pps-cap/` | where the packet allowance starts dropping | the allowance is a token bucket, so a run's history changes what it sees |
 | `density/` | what crowding costs, world size swept | uniform density, not a local knot; single 40 s cells |
+| `head-verify/` | HEAD re-measured after the cache-line fix | single cells; before/after differ by day and instance |
+| `cacheline-ab/` | padding, as a controlled A/B | one instance, one-line diff, interleaved, n=3 per arm |
 
 Two numbers above are **not** backed by anything in `results/`: the original
 `perf` srcline percentages (20.9/6.2/13.4%), whose `perf.data` was not kept and
