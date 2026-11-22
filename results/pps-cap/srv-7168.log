@@ -1,0 +1,27 @@
+ge_arena_udp on 0.0.0.0:9200 -- 60 Hz, world 2000, aoi 64, max 16384 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 7168  in 155629/s  out 105797/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 79800  rewelcome 6  dg/syscall rx 19.6 tx 62.1  aoicand/tick 36378
+players 7168  in 537144/s  out 426265/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 233214  rewelcome 6  dg/syscall rx 17.8 tx 62.3  aoicand/tick 461751
+players 7168  in 795938/s  out 613002/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 326417  rewelcome 6  dg/syscall rx 15.9 tx 62.3  aoicand/tick 461620
+players 7168  in 860171/s  out 860165/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 326417  rewelcome 6  dg/syscall rx 5.5 tx 62.3  aoicand/tick 461543
+players 7168  in 874489/s  out 874492/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 326417  rewelcome 6  dg/syscall rx 4.3 tx 62.3  aoicand/tick 461426
+players 7168  in 830382/s  out 737751/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 347119  rewelcome 6  dg/syscall rx 7.5 tx 62.3  aoicand/tick 461243
+players 7168  in 674795/s  out 509423/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 451836  rewelcome 6  dg/syscall rx 15.9 tx 62.3  aoicand/tick 459506
+players 7168  in 848650/s  out 660866/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 501759  rewelcome 6  dg/syscall rx 19.0 tx 62.3  aoicand/tick 458938
+players 7168  in 889140/s  out 910490/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 501759  rewelcome 6  dg/syscall rx 6.8 tx 62.3  aoicand/tick 458616
+players 7168  in 860152/s  out 860156/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 501759  rewelcome 6  dg/syscall rx 4.6 tx 62.3  aoicand/tick 458975
+players 7168  in 828448/s  out 693773/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 511619  rewelcome 6  dg/syscall rx 12.5 tx 62.3  aoicand/tick 458706
+players 7168  in 876930/s  out 667836/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 530720  rewelcome 6  dg/syscall rx 12.3 tx 62.3  aoicand/tick 459237
+players 7168  in 918345/s  out 853412/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 530720  rewelcome 6  dg/syscall rx 13.2 tx 62.3  aoicand/tick 460225
+players 7168  in 874502/s  out 874499/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 530720  rewelcome 6  dg/syscall rx 4.8 tx 62.3  aoicand/tick 460109
+players 7168  in 843815/s  out 823315/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 530720  rewelcome 6  dg/syscall rx 7.5 tx 62.3  aoicand/tick 461192
+players 7168  in 848585/s  out 653665/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 534770  rewelcome 6  dg/syscall rx 11.9 tx 62.3  aoicand/tick 461606
+players 7168  in 913824/s  out 800975/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 534777  rewelcome 6  dg/syscall rx 14.5 tx 62.3  aoicand/tick 460876
+players 7168  in 896373/s  out 906939/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 534777  rewelcome 6  dg/syscall rx 6.3 tx 62.3  aoicand/tick 460201
+players 7168  in 870337/s  out 865249/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 534777  rewelcome 6  dg/syscall rx 5.6 tx 62.3  aoicand/tick 460199
+players 7168  in 893479/s  out 769299/s  joins 7168  bad 0  sendfail 0  nosession 4225  inputgaps 534777  rewelcome 6  dg/syscall rx 15.3 tx 62.3  aoi

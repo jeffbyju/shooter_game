@@ -1,0 +1,28 @@
+ge_arena_udp on 0.0.0.0:9200 -- 60 Hz, world 2000, aoi 64, max 16384 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 3072  in 308312/s  out 310060/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 3.7 tx 60.0  aoicand/tick 69169
+players 3072  in 374783/s  out 374783/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.5 tx 60.2  aoicand/tick 86268
+players 3072  in 374783/s  out 374784/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 86333
+players 3072  in 368642/s  out 368641/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.8 tx 60.2  aoicand/tick 86375
+players 3072  in 374780/s  out 374782/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.9 tx 60.2  aoicand/tick 86522
+players 3072  in 374780/s  out 374782/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 86688
+players 3072  in 368646/s  out 368643/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.5 tx 60.2  aoicand/tick 86864
+players 3072  in 368633/s  out 368636/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 3.1 tx 60.2  aoicand/tick 86363
+players 3072  in 374790/s  out 374786/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.6 tx 60.2  aoicand/tick 85911
+players 3072  in 368633/s  out 368638/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.5 tx 60.2  aoicand/tick 85930
+players 3072  in 368647/s  out 368643/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.7 tx 60.2  aoicand/tick 85962
+players 3072  in 374782/s  out 374783/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.8 tx 60.2  aoicand/tick 85552
+players 3072  in 368643/s  out 368642/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 85850
+players 3072  in 368641/s  out 368640/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.5 tx 60.2  aoicand/tick 85688
+players 3072  in 374783/s  out 374784/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.8 tx 60.2  aoicand/tick 85746
+players 3072  in 374785/s  out 374784/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.5 tx 60.2  aoicand/tick 86038
+players 3072  in 368640/s  out 368640/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 86332
+players 3072  in 374781/s  out 374783/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.7 tx 60.2  aoicand/tick 85990
+players 3072  in 374786/s  out 374785/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall rx 2.7 tx 60.2  aoicand/tick 85482
+players 3072  in 368642/s  out 368641/s  joins 3072  bad 0  sendfail 0  nosession 1324  inputgaps 0  rewelcome 0  dg/syscall

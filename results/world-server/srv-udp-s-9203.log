@@ -1,0 +1,29 @@
+ge_arena_udp on 0.0.0.0:9203 -- 60 Hz, world 2000, aoi 64, max 4096 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 1024  in  40036/s  out  40754/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.5 tx 60.0  aoicand/tick 3332
+players 1024  in 124930/s  out 124929/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 10354
+players 1024  in 124930/s  out 124929/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 10395
+players 1024  in 122884/s  out 122882/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 10373
+players 1024  in 124919/s  out 124923/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9979
+players 1024  in 124927/s  out 124928/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9889
+players 1024  in 122884/s  out 122882/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9905
+players 1024  in 124936/s  out 124932/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9931
+players 1024  in 122878/s  out 122879/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9942
+players 1024  in 124922/s  out 124925/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9990
+players 1024  in 122888/s  out 122884/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 10047
+players 1024  in 124924/s  out 124926/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9873
+players 1024  in 124920/s  out 124924/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9703
+players 1024  in 122884/s  out 122882/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9743
+players 1024  in 122881/s  out 122880/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9740
+players 1024  in 124932/s  out 124930/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9795
+players 1024  in 124926/s  out 124927/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9823
+players 1024  in 122881/s  out 122881/s  joins 1024  bad 0  sendfail 0  nosession 308  inputgaps 0  rewelcome 0  dg/syscall rx 2.4 tx 60.2  aoicand/tick 9853
+players 1024  in 1249

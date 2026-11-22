@@ -255,27 +255,37 @@ This is why the protocol counts packets rather than bytes. One datagram per
 player per tick at 60 Hz is 122 packets/s/player, and a quarter of a million
 packets a second arrives long before bandwidth is anywhere near saturated.
 
-**It also means there are two ceilings, and the smaller one is not the
-server's.** Throttling happens after `sendmmsg` returns and `sendfail` read 0
-in every run, so the cap never reached the application and did not depress the
-figures above -- the server genuinely emitted 820,296/s. But only ~689,656/s
-reached the wire:
+**It also means there are two ceilings** -- but the second one is not a fixed
+number, and an earlier version of this README got it badly wrong by inferring
+it from a single sample.
 
-| ceiling | rate | players |
-|---|---|---|
-| server CPU, 4 threads | 820,296 /s | 6,836 |
-| server CPU, best placement | 950,687 /s | 7,922 |
-| **instance egress cap (implied)** | **~689,656 /s** | **~5,747** |
+Ramping the offered rate and reading the counter at every step
+([`results/pps-cap/`](results/pps-cap/)):
 
-So the player counts in this README describe what the **server** can produce.
-Above ~5,750 players on this instance size the extra CPU manufactures datagrams
-the hypervisor discards, which is also why the best placement's advantage over
-four threads is partly unrealisable here -- both are already past the cap.
+| clients | emitted /s | pps dropped /s | client received |
+|---|---|---|---|
+| 2,048 | 249,855 | **0** | 97.4% |
+| 4,096 | 499,711 | **0** | 92.7% |
+| 5,120 | 623,649 | 105 | 87.6% |
+| 6,144 | 737,281 | 5,602 | 80.4% |
+| 7,168 | 853,412 | 31,297 | 70.5% |
 
-That ~689,656 is the weakest number in this README: one before/after sample
-rather than a median, and I cannot tell from it whether EC2's allowance is
-per-direction or aggregate (total packets at 6,144 clients were ~1.47M/s
-including ingress). A larger instance gets a larger allowance.
+At 6,144 clients this run dropped 5,602 /s where an earlier one at the same
+load dropped 47,625 /s. The difference is history: the earlier reading followed
+hours of heavy runs, this one ramped from idle. **EC2's packet allowance is a
+token bucket**, so what a run sees depends on what it did beforehand and there
+is no single number to quote. Drops are zero through ~500k /s, trivial at
+~624k, and climb steeply past that.
+
+The more useful column is the last one. At 4,096 clients the drop counter reads
+**zero** while clients receive 92.7%, so that 7.3% is the load generators'
+receive path, not the hypervisor. Client-side delivery falls across the whole
+ramp while hypervisor drops stay at zero for the first three cells; they are
+different effects, and an earlier write-up credited the hypervisor with more
+than its share.
+
+Throttling never reached the application in any run -- `sendfail` read 0
+throughout -- so the server-side figures above stand as measured.
 
 ### Realistic capacity
 
@@ -289,9 +299,10 @@ The last row is the one to quote. Production does not run at 100% CPU, and real
 players cluster into chokepoints where uniformly-spread bots do not. The 20%
 clustering derate is an estimate, not a measurement.
 
-It also sits under the instance's egress cap: ~4,400 players need 528,000
-datagrams/s against a cap implied at ~689,656/s, so this figure is deliverable
-rather than merely producible.
+It also sits well under where packet drops begin: ~4,400 players need 528,000
+datagrams/s, and the ramp shows zero drops through 499,711/s and 105/s at
+623,649/s. Sizing a sustained deployment below the onset is the point, since
+the allowance is credit-based and a burst spends what a quiet period earned.
 
 The cheapest way to double it is not more machines: every player costs 120
 datagrams/s because pings are answered separately from snapshots. Fold the pong

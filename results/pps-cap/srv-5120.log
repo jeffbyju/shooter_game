@@ -1,0 +1,28 @@
+ge_arena_udp on 0.0.0.0:9200 -- 60 Hz, world 2000, aoi 64, max 16384 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 5120  in 345007/s  out 271171/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 22.8 tx 61.3  aoicand/tick 94689
+players 5120  in 648151/s  out 580076/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 12.6 tx 61.7  aoicand/tick 236838
+players 5120  in 614402/s  out 614401/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.4 tx 61.7  aoicand/tick 236982
+players 5120  in 624644/s  out 624642/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.2 tx 61.7  aoicand/tick 236700
+players 5120  in 606008/s  out 579484/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 8.2 tx 61.7  aoicand/tick 236415
+players 5120  in 634886/s  out 634883/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 11.6 tx 61.7  aoicand/tick 236154
+players 5120  in 614400/s  out 614400/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.3 tx 61.7  aoicand/tick 236025
+players 5120  in 614398/s  out 614399/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.5 tx 61.7  aoicand/tick 236279
+players 5120  in 608764/s  out 601342/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 8.7 tx 61.7  aoicand/tick 236013
+players 5120  in 630275/s  out 637697/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 4.5 tx 61.7  aoicand/tick 236020
+players 5120  in 624643/s  out 624642/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.3 tx 61.7  aoicand/tick 236145
+players 5120  in 614401/s  out 614400/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 4.3 tx 61.7  aoicand/tick 236043
+players 5120  in 616373/s  out 615387/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 6.6 tx 61.7  aoicand/tick 235593
+players 5120  in 622660/s  out 623649/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.4 tx 61.7  aoicand/tick 235531
+players 5120  in 614405/s  out 614403/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.5 tx 61.7  aoicand/tick 236310
+players 5120  in 615161/s  out 609661/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 5.1 tx 61.7  aoicand/tick 237563
+players 5120  in 623878/s  out 629378/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 4.5 tx 61.7  aoicand/tick 237275
+players 5120  in 624643/s  out 624642/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 3.4 tx 61.7  aoicand/tick 236577
+players 5120  in 624638/s  out 624639/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 4.0 tx 61.7  aoicand/tick 236536
+players 5120  in 617388/s  out 615894/s  joins 5120  bad 0  sendfail 0  nosession 4359  inputgaps 0  rewelcome 0  dg/syscall rx 5.2 tx 61.7  aoicand/tick 235485
+players 5120  in 621651/s  out 623146/s  joins 5120  bad 0  sendfail 0  nosession 4359  in
