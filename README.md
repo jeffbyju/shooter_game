@@ -40,8 +40,7 @@ build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 256 --seconds 10
 ```
 
 Watch `aoicand/tick` in the server's per-second line, then restart it with
-`--aoi-scan` and run the bots again. On a laptop that is **~800 against exactly
-65,280**. The scan figure is exact because 256 × 255 = 65,280 is what a full
+`--aoi-scan` and run the bots again. On a laptop that is **~750-800 against exactly 65,280**. The scan figure is exact because 256 × 255 = 65,280 is what a full
 scan does by definition; the grid figure moves a little between runs because it
 depends on where players spawn. About a minute, no cloud account.
 
@@ -385,7 +384,31 @@ results/               raw output behind every number above
 
 The repository also contains `ge_world_server` (a sharded TCP server) and
 `ge_gateway`, from an earlier snake game that shares this protocol and codec.
-They are not what the measurements above are about.
+They are not what the measurements above are about, but one comparison is worth
+recording, since it is the clearest argument for the transport choice.
+
+Four worlds and 4,096 clients on each side, eight threads each -- four
+`ge_arena_udp` processes against one `ge_world_server --shards 4 --io-threads 4`:
+
+| | out /s | out / owed | cores | p99 |
+|---|---|---|---|---|
+| UDP, 4 processes | 499,698 | 101.7% | **2.44** | 33.6 ms |
+| TCP, 4 shards | 491,918 | 100.1% | **2.93** | 33.4 ms |
+
+Delivery and tail latency are indistinguishable; **TCP costs 20.1% more CPU**
+for the same work. Per-connection send and receive buffers, no
+`recvmmsg`/`sendmmsg` batching across peers, and a stream that must be
+reassembled into messages where a datagram already is one. The TCP server's
+RSS also reads 739 MiB at 1,024 connections against this server's 4,544 KB at
+2,048 players, because its memory is O(clients) rather than O(threads).
+
+Raw logs for both arms are in [`results/world-server/`](results/world-server/).
+
+Two defects that run found, both fixed: the acceptor handed sockets to I/O
+threads through a fixed 256-entry ring and **closed connections it had already
+accepted** when the ring filled -- invisible to every kernel counter, since the
+handshake had completed -- and the load generator aborted entirely when any one
+client lost its connection.
 
 ## What is in `results/`
 
