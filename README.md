@@ -40,9 +40,10 @@ build/ge_shooter_bots --host 127.0.0.1 --port 9200 --udp --bots 256 --seconds 10
 ```
 
 Watch `aoicand/tick` in the server's per-second line, then restart it with
-`--aoi-scan` and run the bots again. On a laptop that is **808 against
-65,280** — and 256 × 255 = 65,280, which is what a full scan does by
-definition. About a minute, no cloud account.
+`--aoi-scan` and run the bots again. On a laptop that is **~800 against exactly
+65,280**. The scan figure is exact because 256 × 255 = 65,280 is what a full
+scan does by definition; the grid figure moves a little between runs because it
+depends on where players spawn. About a minute, no cloud account.
 
 ## How it works
 
@@ -331,7 +332,7 @@ taskset -c 2-7 build/ge_arena_udp --rx-threads 6 ...
 ## Layout
 
 ```
-apps/arena_udp/        the server: sockets, threads, tick loop  (~900 lines)
+apps/arena_udp/        the server: sockets, threads, tick loop  (~935 lines)
 apps/shooter_client/   SDL3 + OpenGL client, and the shared NetClient
 apps/shooter_bots/     headless clients: functional test and load generator
 include/ge/proto/      wire structs with compile-time invariants, zero-copy codec
