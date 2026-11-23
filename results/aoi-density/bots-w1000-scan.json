@@ -1,0 +1,13 @@
+
+bots 512 for 26s -> 798721 inputs, 787477 deltas
+  input->state       p50    16.67 ms   p90    33.34 ms   p99    33.35 ms   max    34.12 ms
+                     (per snapshot received -- n=787477; biased: an input whose
+                      snapshots were all lost contributes no sample at all)
+  per-input latency  p50    16.67 ms   p90    33.34 ms   p99    33.35 ms
+                     p99.9  33.35 ms   p99.99  33.45 ms  max    50.01 ms
+                     (per input sent -- n=798097, 624 never answered = 0.078%)
+                     (includes up to one 60 Hz tick of quantisation)
+  transport RTT      p50 16669.96 us   p90 16673.50 us   p99 16678.79 us   (ping/pong, no sim)
+  gameplay           hits taken 12109, deaths 3220, shots observed 176094
+  visibility         up to 14 players in one delta, best score 14
+  powerups           12 on the map; collected 833 fuel, 2829 ammo; 42912 ticks spent dry

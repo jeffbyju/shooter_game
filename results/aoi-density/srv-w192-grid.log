@@ -1,0 +1,34 @@
+ge_arena_udp on 0.0.0.0:9606 -- 60 Hz, world 192, aoi 64, max 1024 players
+  transport: UDP datagrams, one message per datagram
+  powerups:  12 on the map (half fuel, half ammo), 9s respawn
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players   0  in      0/s  out      0/s  joins 0  bad 0  sendfail 0  nosession 0  inputgaps 0  rewelcome 0  dg/syscall rx 0.0 tx 0.0  aoicand/tick 0
+players 512  in  60474/s  out  60917/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 164527
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 165767
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 165707
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 164270
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 157491
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 155983
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 155697
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 159777
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 159906
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 160405
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 162315
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 164693
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 164475
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 165742
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 164566
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 165465
+players 512  in  62462/s  out  62463/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 164416
+players 512  in  61442/s  out  61441/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 163712
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 161189
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 158147
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 157751
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 159236
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 159438
+players 512  in  62464/s  out  62464/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 155445
+players 512  in  61440/s  out  61440/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 151936
+players 512  in  49608/s  out  55524/s  joins 512  bad 0  sendfail 0  nosession 110  inputgaps 0  rewelcome 0  dg/syscall rx 1.0 tx 1.0  aoicand/tick 154038
+
+stopped: 512 joins, 798611 inputs, 798721 pings, 0 bad frames
+         0 re-welcomes, 110 datagrams with no session, 0 inputs lost in transit (0.000%)

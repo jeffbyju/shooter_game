@@ -26,6 +26,23 @@ build/ge_shooter --host 127.0.0.1 --port 9200 --udp
 WASD and mouse to move and look, space to jump, double-tap and hold space for
 the jetpack, click to fire. Cyan pickups are fuel, amber are ammo.
 
+![A firefight in the arena](images/arena-firefight.png)
+
+Players are blocks, the floor is a grid and the sky is empty on purpose: every
+frame is drawn by a few hundred lines of immediate-mode OpenGL, because the
+point of the project is the server and a renderer competing for the same core
+would only confuse the measurements.
+
+| | |
+|---|---|
+| ![Players filling the frame](images/arena-crowd.png) | ![The damage vignette](images/arena-hit.png) |
+| Up to 32 other players in one snapshot -- the protocol's per-tick budget. | Taking fire. Four edge bars rather than a full-screen wash, so you can still see what hit you. |
+
+These were captured with the client's own `--selftest N --shot PATH`, which
+renders N frames, reads the framebuffer back, asserts it is neither black nor
+upside down, and writes a PPM. No screen-recording permission, and it runs in
+CI.
+
 The client needs SDL3 and the macOS OpenGL framework; without them CMake skips
 it and the bots still work.
 
@@ -155,10 +172,10 @@ runtime, so no difference here can be a build difference. 2,048 players,
 
 | | `--aoi-scan` | grid | |
 |---|---|---|---|
-| distance checks / tick | 4,192,256 | **38,683** | 108.4× |
+| distance checks / tick | 4,192,256 | **38,683** | ~108× |
 | instructions retired, 20 s | 128.241 B | **60.428 B** | 2.12× |
 | instructions per cycle | 2.48 | 1.62 | — |
-| datagrams out / in | 92.9% | **100.0%** | — |
+| snapshots emitted ÷ owed | **87.4%** | **100.0%** | — |
 
 2048 × 2047 = 4,192,256 is what a full scan does by definition, and that is
 exactly what the counter reads, three consecutive ticks, no rounding. The loop
@@ -461,6 +478,7 @@ verbatim.
 | directory | campaign | the gate, and the caveat that matters |
 |---|---|---|
 | `perf/` | area-of-interest A/B, both profile groupings | 0 lost samples; `--aoi-scan` makes it one binary; ran at 1,024 bots, and its line numbers predate the receive threads |
+| `aoi-density/` | world-size sweep at fixed radius, both arms | local, no cloud -- the candidate counter is a property of the simulation; shows the grid losing below world 256 |
 | `perf-instr/` | the same A/B with `perf stat`, at 1,024 **and** 2,048 | supplies the instruction counts and the 4,192,256 counter; loopback, so not a measurement of the NIC path; n=1 per cell |
 | `scale/` | single-core capacity ramp | generator idle never below 44% |
 | `ceiling/` | threaded ceiling, 1/4/8 threads | idle never below 42.7%; single 45 s runs, knee bracketed not located |
