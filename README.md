@@ -178,7 +178,7 @@ runtime, so no difference here can be a build difference. 2,048 players,
 | snapshots emitted ÷ owed | **87.4%** | **100.0%** | — |
 
 2048 × 2047 = 4,192,256 is what a full scan does by definition, and that is
-exactly what the counter reads, three consecutive ticks, no rounding. The loop
+exactly what the counter reads, in 111 consecutive per-second reports. The loop
 was provably quadratic, not merely slow.
 
 **IPC falls when the loop is removed**, which is the counterintuitive part. The
