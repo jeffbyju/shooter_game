@@ -1,0 +1,8 @@
+
+ Performance counter stats for process id '27902':
+
+      128240850221      instructions                     #    2.48  insn per cycle         
+       51726958190      cycles                                                             
+
+      20.001089588 seconds time elapsed
+

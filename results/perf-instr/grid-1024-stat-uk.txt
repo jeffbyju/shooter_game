@@ -1,0 +1,8 @@
+
+ Performance counter stats for process id '27688':
+
+        4045933868      instructions:u                                                     
+       30935419222      instructions:k                                                     
+
+      20.001357091 seconds time elapsed
+

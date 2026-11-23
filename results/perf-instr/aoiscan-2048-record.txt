@@ -1,0 +1,2 @@
+[ perf record: Woken up 4 times to write data ]
+[ perf record: Captured and wrote 0.766 MB /root/out/aoiscan-2048.data (19935 samples) ]

@@ -1,0 +1,11 @@
++ uname -a
+Linux ip-172-31-6-135.us-east-2.compute.internal 6.18.62-127.179.amzn2023.aarch64 #2 SMP Wed Nov 11 00:31:16 UTC 2026 aarch64 aarch64 aarch64 GNU/Linux
++ lscpu
++ egrep 'Model name|^CPU\(s\)|Thread|Core|Socket'
+CPU(s):                                  8
+BIOS Model name:                         AWS Graviton3
+Thread(s) per core:                      1
+Core(s) per socket:                      8
+Socket(s):                               1
++ perf --version
+perf version 6.1.190-237.442.amzn2023.aarch64

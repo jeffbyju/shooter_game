@@ -1,0 +1,13 @@
+usage: ./build/ge_shooter_bots [options]
+  --host H       server            (default 127.0.0.1)
+  --port P       port              (default 9000)
+  --bots N       concurrent bots   (default 8)
+  --seconds S    run length        (default 10)
+  --no-fire      move but never shoot
+  --json         emit one JSON line instead of a table
+  --drop-pct N   discard N% of received deltas, to test loss tolerance
+  --send-drop-pct N  discard N% of SENT inputs, to test the server's
+                 sequence-gap counter against a known loss rate
+  --aim-error D  add +/-D degrees of random aim error (default 0 = perfect)
+  --fire-duty P  hold the trigger only P% of the time (default 100)
+  --no-scavenge  never walk toward powerups (bots will run dry and stay dry)

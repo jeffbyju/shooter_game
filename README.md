@@ -137,33 +137,51 @@ saturated load generator cannot forge it.
 | server CPU | ~99% of one core |
 | 10-minute soak | RSS flat at 4,544 KB, every error counter 0 |
 
-Of the 7,305 instructions each datagram costs, **6,091 are kernel**. Simulation
-is 15.2% of the core. The syscall path is what is full, and every optimisation
-below follows from that one measurement.
+Each datagram costs **6,147 instructions, of which 5,316 (86.5%) are kernel**
+([`results/perf-instr/`](results/perf-instr/), `perf stat -e
+instructions:u,instructions:k`). The syscall path is what is full, and every
+optimisation below follows from that one measurement.
+
+Per-datagram cost *falls* as load rises — 6,993 instructions at 1,024 players,
+6,147 at 2,048 — because `recvmmsg` and `sendmmsg` batches get fuller and the
+fixed syscall cost amortises over more datagrams.
 
 ### Area of interest, isolated by a runtime flag
 
-Median of 3 runs, `[min–max]`:
+Both arms are one binary; `--aoi-scan` restores the original O(n²) loop at
+runtime, so no difference here can be a build difference. 2,048 players,
+20-second `perf` windows, 0 lost samples
+([`results/perf-instr/`](results/perf-instr/)):
 
-| | `--aoi-scan` | grid |
-|---|---|---|
-| distance checks / tick | 4,262,127 `[±0]` | **39,517** `[39.2–40.1k]` |
-| instructions retired | 188.44 B | **91.26 B** |
-| simulation CPU | 36.9% | **15.2%** |
+| | `--aoi-scan` | grid | |
+|---|---|---|---|
+| distance checks / tick | 4,192,256 | **38,683** | 108.4× |
+| instructions retired, 20 s | 128.241 B | **60.428 B** | 2.12× |
+| instructions per cycle | 2.48 | 1.62 | — |
+| datagrams out / in | 92.9% | **100.0%** | — |
 
 2048 × 2047 = 4,192,256 is what a full scan does by definition, and that is
-what the counter reads. The loop was provably quadratic, not merely slow.
+exactly what the counter reads, three consecutive ticks, no rounding. The loop
+was provably quadratic, not merely slow.
+
+**IPC falls when the loop is removed**, which is the counterintuitive part. The
+scan was the friendliest work in the program — contiguous float arrays, one
+predicted branch — running at **4.19 instructions per cycle** measured as the
+marginal rate between the two arms at 1,024 players, where both deliver
+identical traffic to the datagram. Deleting the easiest work lowers the
+average. Optimise instructions or time; IPC is a diagnostic, not a goal.
 
 It is also visible in a profile, but only if you ask correctly. Grouped by
-function the whole server is one `main` box worth 16.89% and the loop cannot be
-named at all, because inlining deleted its stack frame. Grouped by source line:
+function, the hottest entry is `main::{lambda(int)#1}::operator()` at 48.01% —
+the whole receive thread as one opaque box, which cannot name the loop at all,
+because inlining deleted its stack frame. Grouped by source line:
 
 | | `--aoi-scan` | grid |
 |---|---|---|
-| `main.cpp:611-618` | **10.57%** | **0.00%** |
-| all user-space samples | 16.84% | 7.18% |
+| `main.cpp:756-761` | **41.39%** | **0.00%** |
+| all user-space samples | 48.79% | 11.51% |
 
-Two thirds of all user-space time on four lines, invisible in the default view.
+Five lines carry 41% of the process, invisible in the default view.
 
 ### Scaling across cores
 
@@ -374,7 +392,7 @@ build/ge_arena_udp --aoi-scan    # the original O(n^2) area-of-interest loop
 build/ge_arena_udp --batch 1     # one recvfrom/sendto per datagram
 
 # tests and microbenchmarks
-build/ge_tests                   # 94 tests, 312k assertions
+build/ge_tests                   # 97 tests, ~312k assertions
 build/ge_bench
 ```
 
@@ -402,7 +420,7 @@ include/ge/proto/      wire structs with compile-time invariants, zero-copy code
 include/ge/world/      SoA entity store, CSR spatial grid, pickups
 include/ge/core/       monotonic clock, PRNG, thread naming
 include/ge/metrics/    HDR histogram, per-thread counters
-tests/                 94 tests: protocol + mutation fuzzing, grid, arena,
+tests/                 97 tests: protocol + mutation fuzzing, grid, arena,
                        allocators, client linear algebra
 results/               raw output behind every number above
 ```
@@ -442,7 +460,8 @@ verbatim.
 
 | directory | campaign | the gate, and the caveat that matters |
 |---|---|---|
-| `perf/` | area-of-interest A/B, both profile groupings | 0 lost samples; `--aoi-scan` makes it one binary |
+| `perf/` | area-of-interest A/B, both profile groupings | 0 lost samples; `--aoi-scan` makes it one binary; ran at 1,024 bots, and its line numbers predate the receive threads |
+| `perf-instr/` | the same A/B with `perf stat`, at 1,024 **and** 2,048 | supplies the instruction counts and the 4,192,256 counter; loopback, so not a measurement of the NIC path; n=1 per cell |
 | `scale/` | single-core capacity ramp | generator idle never below 44% |
 | `ceiling/` | threaded ceiling, 1/4/8 threads | idle never below 42.7%; single 45 s runs, knee bracketed not located |
 | `placement/` | interrupt affinity and softirq | `ethtool` before/after included; receive and transmit softirq share one counter |
@@ -458,6 +477,16 @@ Two numbers above are **not** backed by anything in `results/`: the original
 `perf` srcline percentages (20.9/6.2/13.4%), whose `perf.data` was not kept and
 whose pre-fix build no longer exists in git, and the first `ge_world_server`
 run. Everything else can be recomputed from those directories.
+
+An earlier revision of this README quoted four figures — 4,262,127 distance
+checks, 188.44 B instructions, 7,305 instructions per datagram of which 6,091
+kernel, and 3.5 instructions per cycle — that no file here supported.
+`perf-instr/` was run to settle them. Three survived re-measurement with
+different values (4,192,256 checks, 2.12× rather than 2.06× fewer instructions,
+6,147 instructions per datagram) and one did not: the kernel share is 86.5%,
+not 83%, because the 83% was a `cpu-clock` time share relabelled as an
+instruction share. A number quoted without a file is a number waiting to be
+wrong.
 
 ## Known limitations
 
@@ -491,6 +520,6 @@ run. Everything else can be recomputed from those directories.
 - Real io_uring: the current backend uses `IORING_OP_POLL_ADD` only, so it
   learns which sockets are ready and then does ordinary reads and writes.
   Batched `RECV`/`SEND`, SQPOLL and multishot are unimplemented
-- Kernel bypass, since 83% of the per-datagram cost is kernel
+- Kernel bypass, since 86.5% of the per-datagram cost is kernel
 - A fleet manager rather than an autoscaling group: game servers are stateful,
   so scale-in has to drain before it terminates

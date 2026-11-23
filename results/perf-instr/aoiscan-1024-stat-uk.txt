@@ -1,0 +1,8 @@
+
+ Performance counter stats for process id '27413':
+
+       26257311562      instructions:u                                                     
+       30181821676      instructions:k                                                     
+
+      20.001124799 seconds time elapsed
+

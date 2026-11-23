@@ -1,0 +1,36 @@
+== aoiscan-1024 ==
+aoicand/tick 1047552
+aoicand/tick 1047552
+aoicand/tick 1047552
+aoicand/tick 1047552
+aoicand/tick 1047552
+aoicand/tick 1047552
+aoicand/tick 1047552
+aoicand/tick 1047552
+== grid-1024 ==
+aoicand/tick 10175
+aoicand/tick 10148
+aoicand/tick 9912
+aoicand/tick 9974
+aoicand/tick 9883
+aoicand/tick 9978
+aoicand/tick 9895
+aoicand/tick 9949
+== aoiscan-2048 ==
+aoicand/tick 4192256
+aoicand/tick 4192256
+aoicand/tick 4192256
+aoicand/tick 4192256
+aoicand/tick 4192256
+aoicand/tick 4192256
+aoicand/tick 4192256
+aoicand/tick 4192256
+== grid-2048 ==
+aoicand/tick 38603
+aoicand/tick 38984
+aoicand/tick 39125
+aoicand/tick 38994
+aoicand/tick 38726
+aoicand/tick 38420
+aoicand/tick 38219
+aoicand/tick 38360

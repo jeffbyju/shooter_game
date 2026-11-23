@@ -1,0 +1,2 @@
+[ perf record: Woken up 2 times to write data ]
+[ perf record: Captured and wrote 0.381 MB /root/out/grid-1024.data (9849 samples) ]

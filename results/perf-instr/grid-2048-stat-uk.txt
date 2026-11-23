@@ -1,0 +1,8 @@
+
+ Performance counter stats for process id '28205':
+
+        8139248407      instructions:u                                                     
+       52267574301      instructions:k                                                     
+
+      20.001069580 seconds time elapsed
+

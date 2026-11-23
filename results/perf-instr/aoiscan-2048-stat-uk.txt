@@ -1,0 +1,8 @@
+
+ Performance counter stats for process id '27902':
+
+       84735917642      instructions:u                                                     
+       43983513073      instructions:k                                                     
+
+      20.001078838 seconds time elapsed
+
