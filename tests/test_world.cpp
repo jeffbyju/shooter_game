@@ -9,8 +9,10 @@
 
 #include "ge/core/bits.hpp"
 #include "ge/proto/codec.hpp"
+#include "ge/world/arena.hpp"
 #include "ge/world/grid.hpp"
 #include "ge/world/shard.hpp"
+#include "ge/world/terrain.hpp"
 
 using namespace ge;
 using namespace ge::world;
@@ -693,4 +695,155 @@ GE_TEST(arena_shard_aoi_grid_examines_far_fewer_candidates_than_a_linear_scan) {
     // happen to spawn in the same cell, while still being 8x under the scan.
     const double per_query = double(cands) / double(ticks * kPlayers);
     CHECK(per_query < 8.0);
+}
+
+// ---------------------------------------------------------------- terrain
+//
+// Terrain is never transmitted: both sides generate it from a seed. That makes
+// determinism a *correctness* property, not a nicety -- a server and client
+// that disagree by one mantissa bit put every player on a slightly different
+// floor, and nothing in the protocol would ever notice. These tests exist to
+// make that failure a build failure.
+
+GE_TEST(terrain_same_seed_same_lattice) {
+    Terrain a, b;
+    a.configure(2000.0f, 0xC0FFEEu, 30.0f);
+    b.configure(2000.0f, 0xC0FFEEu, 30.0f);
+    CHECK_EQ(a.digest(), b.digest());
+
+    // And a different seed must actually produce different ground, or the
+    // generator is ignoring its input and every world is the same world.
+    Terrain c;
+    c.configure(2000.0f, 0xC0FFEFu, 30.0f);
+    CHECK(c.digest() != a.digest());
+}
+
+// Regenerating from the same seed after other work has run must give the same
+// answer -- catches a generator that accidentally depends on a shared RNG or
+// on allocation order.
+GE_TEST(terrain_generation_is_order_independent) {
+    Terrain first;
+    first.configure(1000.0f, 7u, 20.0f);
+    const std::uint64_t d1 = first.digest();
+
+    core::Xoshiro256ss noise(12345);
+    volatile double sink = 0.0;
+    for (int i = 0; i < 1000; ++i) sink += noise.next_double();
+    (void)sink;
+
+    Terrain again;
+    again.configure(1000.0f, 7u, 20.0f);
+    CHECK_EQ(again.digest(), d1);
+}
+
+GE_TEST(terrain_floor_is_never_below_zero) {
+    Terrain t;
+    t.configure(1000.0f, 42u, 25.0f);
+    CHECK(t.max_height() > 0.0f);
+
+    float lo = 1e9f;
+    for (int i = 0; i <= 200; ++i) {
+        for (int j = 0; j <= 200; ++j) {
+            const float h = t.height(float(i) * 5.0f, float(j) * 5.0f);
+            CHECK(h >= 0.0f);
+            lo = std::min(lo, h);
+        }
+    }
+    // The generator shifts the lowest lattice point to zero, so a dense sample
+    // should find something close to the floor.
+    CHECK(lo < 1.0f);
+}
+
+// A discontinuity in the ground is a player falling through the world. Bilinear
+// interpolation is C0, so the bound here is the lattice gradient, not zero.
+GE_TEST(terrain_height_is_continuous) {
+    Terrain t;
+    t.configure(1000.0f, 3u, 25.0f);
+    const float step = 0.05f;
+    float worst = 0.0f;
+    for (int i = 0; i < 4000; ++i) {
+        const float x = 10.0f + float(i) * 0.2f;
+        const float z = 500.0f;
+        worst = std::max(worst, std::fabs(t.height(x + step, z) - t.height(x, z)));
+    }
+    // 5 cm of travel must not move the ground by a metre.
+    CHECK(worst < 1.0f);
+}
+
+GE_TEST(terrain_queries_outside_the_world_are_clamped) {
+    Terrain t;
+    t.configure(500.0f, 11u, 10.0f);
+    // Must not read out of bounds or return garbage; equality with the edge is
+    // the clamp doing its job.
+    CHECK_EQ(t.height(-100.0f, -100.0f), t.height(0.0f, 0.0f));
+    CHECK_EQ(t.height(10'000.0f, 10'000.0f), t.height(500.0f, 500.0f));
+}
+
+// The control arm: with no terrain, step() must behave exactly as it did
+// before terrain existed. If this ever fails, the flat-world baseline that
+// every earlier measurement used has moved.
+GE_TEST(flat_world_step_is_unchanged) {
+    ArenaStore a;
+    a.reserve(4);
+    const std::uint32_t i = a.add(1, 50.0f, 50.0f, ClientLink{});
+    a.set_input(i, 0.0f, 0.0f, 0.0f, 0.0f, 0u, 0u, 0ull);
+    for (int k = 0; k < 120; ++k) a.step(1.0f / 60.0f, 100.0f);
+    CHECK_EQ(a.y(i), 0.0f);          // rests on the floor plane
+    CHECK(a.x(i) == 50.0f && a.z(i) == 50.0f);
+}
+
+GE_TEST(player_comes_to_rest_on_the_terrain) {
+    Terrain t;
+    t.configure(100.0f, 5u, 12.0f);
+
+    ArenaStore a;
+    a.reserve(4);
+    const std::uint32_t i = a.add(1, 50.0f, 50.0f, ClientLink{});
+    a.set_input(i, 0.0f, 0.0f, 0.0f, 0.0f, 0u, 0u, 0ull);
+
+    // add() spawns at y = 0, which on terrain is usually *inside* a hill.
+    // The clamp should lift it to the surface and leave it there.
+    for (int k = 0; k < 600; ++k) a.step(1.0f / 60.0f, 100.0f, &t);
+
+    const float ground = t.height(a.x(i), a.z(i));
+    CHECK(std::fabs(a.y(i) - ground) < 0.01f);
+    // And the test is only meaningful if the ground there is not the floor.
+    CHECK(ground > 0.5f);
+}
+
+// Find the steepest adjacent pair in a generated map and try to walk up it.
+// Generated terrain means the test cannot hand-place a cliff, so it looks for
+// one.
+GE_TEST(walking_cannot_climb_a_cliff) {
+    Terrain t;
+    // Deliberately extreme: at the amplitudes this server actually runs,
+    // the steepest rise anywhere is 0.29 units per unit travelled and the
+    // step rule never fires. It is reachable only on a small map with tall
+    // terrain, which is the configuration under test here.
+    t.configure(300.0f, 17u, 120.0f);
+
+    // Slope, measured over the distance one tick of walking actually covers,
+    // because that is what the rule compares against.
+    const float run = kMoveSpeed / 60.0f;
+    float best = 0.0f, bx = 0.0f, bz = 0.0f;
+    for (int i = 10; i < 290; ++i) {
+        for (int j = 10; j < 290; ++j) {
+            const float x = float(i), z = float(j);
+            const float slope = (t.height(x + run, z) - t.height(x, z)) / run;
+            if (slope > best) { best = slope; bx = x; bz = z; }
+        }
+    }
+    // The map must actually contain something steep or there is nothing to test.
+    CHECK(best > kTerrainMaxSlope);
+
+    ArenaStore a;
+    a.reserve(4);
+    const std::uint32_t i = a.add(1, bx, bz, ClientLink{});
+    // Face +x and hold forward. yaw such that forward is +x.
+    a.set_input(i, 0.0f, 1.0f, 1.5707963f, 0.0f, 0u, 0u, 0ull);
+    for (int k = 0; k < 10; ++k) a.step(1.0f / 60.0f, 300.0f, &t);
+
+    // Ten ticks of walking covers 10*run; even at the maximum walkable slope
+    // that is all the height it could legitimately have gained.
+    CHECK(a.y(i) <= t.height(bx, bz) + kTerrainMaxSlope * run * 10.0f + 0.01f);
 }

@@ -3,9 +3,10 @@
 // structure of arrays, nothing allocated on the tick path -- but a player is
 // just a point with a velocity and two angles.
 //
-// The world is a box: x,z in [0,size], y up with the floor at 0. No level
-// geometry, deliberately: this mode exists to exercise the transport with a
-// different message shape, and a BSP would not change that.
+// The world is a box: x,z in [0,size], y up. The floor is at 0 unless a
+// Terrain is supplied to step(), in which case it is terrain->height(x,z).
+// Still no level geometry beyond that -- no walls, no BSP -- because this mode
+// exists to exercise the transport and a BSP would not change that.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -14,7 +15,8 @@
 #include "ge/core/bits.hpp"       // Xoshiro256ss
 #include "ge/core/platform.hpp"
 #include "ge/proto/wire.hpp"
-#include "ge/world/snake.hpp"   // ClientLink
+#include "ge/world/snake.hpp"    // ClientLink
+#include "ge/world/terrain.hpp"
 
 namespace ge::world {
 
@@ -248,7 +250,12 @@ public:
 
     // Integrate one tick. Movement is relative to yaw, gravity pulls toward the
     // floor, and the box is a hard clamp rather than a bounce.
-    void step(float dt, float world_size) noexcept {
+    //
+    // `terrain` is optional and defaults to flat ground at y=0, which is what
+    // every existing caller and test gets. That is deliberate: it keeps the
+    // flat world available as the control arm of an A/B rather than deleting
+    // it, the same way `--aoi-scan` keeps the quadratic loop around.
+    void step(float dt, float world_size, const Terrain* terrain = nullptr) noexcept {
         const std::size_t n = id_.size();
         for (std::size_t i = 0; i < n; ++i) {
             if (!alive_[i]) continue;
@@ -266,10 +273,41 @@ public:
             const float len = std::sqrt(dx * dx + dz * dz);
             if (len > 1.0f) { dx /= len; dz /= len; }   // no diagonal speed bonus
 
+            const float prev_x = x_[i], prev_z = z_[i];
             x_[i] += dx * kMoveSpeed * dt;
             z_[i] += dz * kMoveSpeed * dt;
 
-            const bool grounded = y_[i] <= 0.0001f && vy_[i] <= 0.0f;
+            // --- ground ----------------------------------------------------
+            // Everything below that used to compare against the constant 0 now
+            // compares against `ground`. With no terrain that is 0 and the
+            // arithmetic is identical to before.
+            float ground = 0.0f;
+            if (terrain) {
+                const float prev_ground = terrain->height(prev_x, prev_z);
+                ground = terrain->height(x_[i], z_[i]);
+                // A slope you cannot climb is a wall you cannot walk through.
+                // Compared as rise over run, not as an absolute rise: one tick
+                // of walking covers only kMoveSpeed*dt, so an absolute limit
+                // would need a near-vertical face to trigger and would never
+                // fire on real ground.
+                //
+                // Gated on actually being near the ground, because a player
+                // crossing the same cliff on a jetpack is above it and must not
+                // be stopped. Testing altitude rather than a grounded flag
+                // means a jump and a flight read the same way -- there is no
+                // second definition of "on foot" to keep in sync.
+                const float mx = x_[i] - prev_x, mz = z_[i] - prev_z;
+                const float run = std::sqrt(mx * mx + mz * mz);
+                if (run > 0.0f &&
+                    y_[i] <= prev_ground + kEyeHeight &&
+                    ground - prev_ground > kTerrainMaxSlope * run) {
+                    x_[i]  = prev_x;
+                    z_[i]  = prev_z;
+                    ground = prev_ground;
+                }
+            }
+
+            const bool grounded = y_[i] <= ground + 0.0001f && vy_[i] <= 0.0f;
             if (grounded && (in_btn_[i] & proto::kBtnJump)) vy_[i] = kJumpSpeed;
 
             // --- jetpack -------------------------------------------------
@@ -302,13 +340,18 @@ public:
             // vertical speed means there is no second path to keep in sync.
             if (vy_[i] > kJetMaxRise) vy_[i] = kJetMaxRise;
             y_[i]  += vy_[i] * dt;
-            if (y_[i] < 0.0f) { y_[i] = 0.0f; vy_[i] = 0.0f; }
+            if (y_[i] < ground) { y_[i] = ground; vy_[i] = 0.0f; }
             // Soft roof. Without one, a full tank buys about 33 m of altitude
             // and the arena below stops being legible -- players become dots
             // and the game turns into a staring contest. Hitting it kills the
             // climb but not the flight, so it reads as a ceiling rather than
             // as the jetpack failing.
-            if (y_[i] > kCeiling) { y_[i] = kCeiling; if (vy_[i] > 0.0f) vy_[i] = 0.0f; }
+            // Relative to the ground under the player, not to absolute zero.
+            // On a 30-unit peak an absolute roof would leave 15 units of
+            // headroom instead of 45, and on terrain taller than the roof it
+            // would pin the player inside the hill.
+            const float roof = ground + kCeiling;
+            if (y_[i] > roof) { y_[i] = roof; if (vy_[i] > 0.0f) vy_[i] = 0.0f; }
 
             if (x_[i] < 0.0f) x_[i] = 0.0f;
             if (z_[i] < 0.0f) z_[i] = 0.0f;
