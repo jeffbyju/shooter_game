@@ -148,7 +148,65 @@ GLuint link_program(const char* vs, const char* fs, const char* label) {
 }
 
 // ------------------------------------------------------------------ meshes
-struct Mesh { GLuint vao = 0, vbo = 0; GLsizei count = 0; };
+struct Mesh { GLuint vao = 0, vbo = 0, ebo = 0; GLsizei count = 0; };
+
+// A mesh of the server's heightmap, generated here from the seed the server
+// sent rather than downloaded. Both sides run ge::world::Terrain over the same
+// seed, so this geometry is the same geometry the server collides against --
+// if it were not, players would stand visibly above or below the ground and
+// nothing in the protocol would say why.
+//
+// Indexed, because the unindexed version of a 513-point lattice is 1.57M
+// vertices at 24 bytes each. Built once, on the frame the welcome arrives.
+Mesh make_terrain_mesh(const ge::world::Terrain& t, float world, int res) {
+    const float step = world / float(res - 1);
+    std::vector<float> v;
+    v.reserve(std::size_t(res) * std::size_t(res) * 6);
+    for (int r = 0; r < res; ++r) {
+        const float z = float(r) * step;
+        for (int c = 0; c < res; ++c) {
+            const float x = float(c) * step;
+            // Central differences for the normal. One-sided at the border
+            // would tilt the edge rows and leave a visible seam ring.
+            const float e  = step;
+            const float hl = t.height(x - e, z), hr = t.height(x + e, z);
+            const float hd = t.height(x, z - e), hu = t.height(x, z + e);
+            float nx = -(hr - hl) / (2.0f * e);
+            float nz = -(hu - hd) / (2.0f * e);
+            const float inv = 1.0f / std::sqrt(nx * nx + 1.0f + nz * nz);
+            v.insert(v.end(), {x, t.height(x, z), z, nx * inv, inv, nz * inv});
+        }
+    }
+    std::vector<std::uint32_t> idx;
+    idx.reserve(std::size_t(res - 1) * std::size_t(res - 1) * 6);
+    for (int r = 0; r + 1 < res; ++r) {
+        for (int c = 0; c + 1 < res; ++c) {
+            const std::uint32_t a = std::uint32_t(r) * std::uint32_t(res) + std::uint32_t(c);
+            const std::uint32_t b = a + 1;
+            const std::uint32_t d = a + std::uint32_t(res);
+            const std::uint32_t e2 = d + 1;
+            // Same winding as make_quad_xz, so the +y normal stays a front
+            // face and the two-sided branch in the shader is never taken.
+            idx.insert(idx.end(), {a, e2, b, e2, a, d});
+        }
+    }
+
+    Mesh m;
+    m.count = GLsizei(idx.size());
+    glGenVertexArrays(1, &m.vao); glBindVertexArray(m.vao);
+    glGenBuffers(1, &m.vbo); glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(v.size() * sizeof(float)), v.data(), GL_STATIC_DRAW);
+    glGenBuffers(1, &m.ebo); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(idx.size() * sizeof(std::uint32_t)),
+                 idx.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+                          reinterpret_cast<void*>(3 * sizeof(float)));
+    glBindVertexArray(0);
+    return m;
+}
 
 Mesh make_cube() {
     // 36 vertices, position + normal, written out because a loop would be
@@ -382,6 +440,9 @@ int main(int argc, char** argv) {
 
     Mesh cube = make_cube();
     Mesh floor_mesh = make_quad_xz();
+    // Terrain cannot be built yet: its seed arrives in the welcome.
+    ge::world::Terrain terrain;
+    Mesh terrain_mesh;
     Mesh uiquad = make_ui_quad();
 
     // Dynamic vertex buffer for tracers: rewritten every frame, so GL_STREAM_DRAW.
@@ -703,15 +764,35 @@ int main(int argc, char** argv) {
         glUseProgram(prog);
         glUniformMatrix4fv(u_viewproj, 1, GL_FALSE, vp.m);
 
+        // Terrain arrives as a seed in the welcome, so the mesh cannot be built
+        // before the first frame. Built once, here, when the seed shows up.
+        if (view.terrain_seed != 0 && terrain_mesh.vao == 0) {
+            terrain.configure(view.world_size, view.terrain_seed,
+                              view.world_size * ge::world::kTerrainAmpPerUnit);
+            const int res = terrain.lattice();
+            terrain_mesh = make_terrain_mesh(terrain, view.world_size, res);
+            std::printf("terrain seed %u  %dx%d verts  %d tris  peak %.1f\n",
+                        view.terrain_seed, res, res, terrain_mesh.count / 3,
+                        double(terrain.max_height()));
+        }
+
         // floor
         {
             const float s = view.world_size;
-            const Mat4 m = cl::translate_scale(s * 0.5f, 0.0f, s * 0.5f, s, 1.0f, s);
-            set_model(mu, m);
             glUniform3f(u_colour, 0.16f, 0.18f, 0.22f);
             glUniform1i(u_grid, 1);
-            glBindVertexArray(floor_mesh.vao);
-            glDrawArrays(GL_TRIANGLES, 0, floor_mesh.count);
+            if (terrain_mesh.vao != 0) {
+                // Already in world space, so the model matrix is identity --
+                // scaling a heightmap would scale its heights too.
+                set_model(mu, cl::identity());
+                glBindVertexArray(terrain_mesh.vao);
+                glDrawElements(GL_TRIANGLES, terrain_mesh.count, GL_UNSIGNED_INT, nullptr);
+            } else {
+                const Mat4 m = cl::translate_scale(s * 0.5f, 0.0f, s * 0.5f, s, 1.0f, s);
+                set_model(mu, m);
+                glBindVertexArray(floor_mesh.vao);
+                glDrawArrays(GL_TRIANGLES, 0, floor_mesh.count);
+            }
         }
 
         glUniform1i(u_grid, 0);

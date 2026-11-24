@@ -45,6 +45,9 @@ struct WorldView {
     std::uint32_t self_id   = 0;
     bool          have_self = false;
     float         world_size = 256.0f;
+    // Seed the server chose for the heightmap, or 0 for a flat floor. The
+    // terrain itself never arrives: the client generates it from this.
+    std::uint32_t terrain_seed = 0;
     std::uint32_t tick      = 0;
     std::uint64_t last_rtt_ns = 0;
     // The raw echoed input timestamp, not the derived RTT. A load generator
@@ -216,8 +219,9 @@ private:
         switch (f.type()) {
             case proto::MsgType::ServerWelcome: {
                 if (const auto* w = f.as<proto::ServerWelcome>()) {
-                    session_        = w->session_id;
-                    view.world_size = w->world_size;
+                    session_         = w->session_id;
+                    view.world_size  = w->world_size;
+                    view.terrain_seed = w->terrain_seed;
                 }
                 break;
             }
