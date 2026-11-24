@@ -85,13 +85,14 @@ public:
     // nothing to walk toward. Fixing the kind guarantees six of each are
     // always in rotation. The POSITION is what is random, which is the part
     // that makes a powerup worth hunting for.
-    void init(std::uint16_t n, float world, core::Xoshiro256ss& rng) {
+    void init(std::uint16_t n, float world, core::Xoshiro256ss& rng,
+              const Terrain* terrain = nullptr) {
         kind_.assign(n, 0); x_.assign(n, 0.0f); y_.assign(n, kPickupY);
         z_.assign(n, 0.0f); active_.assign(n, 1); respawn_at_.assign(n, 0);
         for (std::uint16_t i = 0; i < n; ++i) {
             kind_[i] = std::uint8_t(i % 2 == 0 ? proto::PickupKind::Fuel
                                                : proto::PickupKind::Ammo);
-            place(i, world, rng);
+            place(i, world, rng, terrain);
         }
     }
 
@@ -110,21 +111,27 @@ public:
     // Respawns anything whose timer has run out, somewhere new. Re-rolling the
     // position rather than restoring the old one is what stops the map turning
     // into a set of memorised camping spots.
-    void update(std::uint64_t tick, float world, core::Xoshiro256ss& rng) noexcept {
+    void update(std::uint64_t tick, float world, core::Xoshiro256ss& rng,
+                const Terrain* terrain = nullptr) noexcept {
         for (std::uint16_t i = 0; i < size(); ++i) {
             if (active_[i] || tick < respawn_at_[i]) continue;
-            place(i, world, rng);
+            place(i, world, rng, terrain);
             active_[i] = 1;
         }
     }
 
 private:
-    void place(std::uint16_t i, float world, core::Xoshiro256ss& rng) noexcept {
+    // Terrain is taken here rather than applied afterwards because respawn
+    // re-rolls the position, and a pickup placed at a flat kPickupY would sink
+    // into the first hill it respawned under -- invisible, and uncollectable
+    // because the pickup radius is smaller than the hill.
+    void place(std::uint16_t i, float world, core::Xoshiro256ss& rng,
+               const Terrain* terrain) noexcept {
         const float margin = 6.0f;
         const float span   = world - 2.0f * margin;
         x_[i] = margin + float(rng.next_double()) * span;
         z_[i] = margin + float(rng.next_double()) * span;
-        y_[i] = kPickupY;
+        y_[i] = kPickupY + (terrain ? terrain->height(x_[i], z_[i]) : 0.0f);
     }
 
     std::vector<std::uint8_t>  kind_, active_;
@@ -165,6 +172,15 @@ public:
         link_.push_back(link); last_seq_.push_back(0); last_ts_.push_back(0);
         tick_flags_.push_back(0);
         return slot;
+    }
+
+    // Put a slot's feet on the terrain. add() and spawn() both place at y = 0,
+    // which on terrain is usually inside a hill; step() would eject the player
+    // upward on the next tick, but the first snapshot would already have gone
+    // out with them buried. Called at spawn time so that never happens.
+    void lift_to_ground(std::uint32_t slot, const Terrain& t) noexcept {
+        y_[slot]  = t.height(x_[slot], z_[slot]);
+        vy_[slot] = 0.0f;
     }
 
     void remove(std::uint32_t slot) noexcept {

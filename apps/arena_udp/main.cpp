@@ -380,6 +380,7 @@ void usage(const char* a0) {
 "  --aoi F       area of interest    (default 400)\n"
 "  --max N       max players         (default 256)\n"
 "  --pickups N   powerups on the map (default 12, max %zu)\n"
+"  --terrain S   seed the heightmap with S; 0 (default) is a flat floor\n"
 "  --aoi-scan    skip the spatial grid and scan every entity, as the\n"
 "                original did -- the A/B for the AOI work, same binary\n"
 "  --batch N     datagrams per syscall; 1 = one recvfrom/sendto each\n"
@@ -396,6 +397,10 @@ int main(int argc, char** argv) {
     int tick_hz = 60, max_players = 256;
     int n_pickups = int(proto::kMaxPickups);
     float world_size = 200.0f, aoi = 400.0f;
+    // 0 = flat floor. Any other value seeds the heightmap, and the same
+    // value reaches the client in ServerWelcome so both sides generate
+    // identical ground without sending any of it.
+    std::uint32_t terrain_seed = 0;
     bool quiet = false;
     int  batch_size = GE_HAVE_MMSG ? 64 : 1;
     bool aoi_scan   = false;
@@ -414,6 +419,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--max"))     max_players = std::atoi(next());
         else if (!std::strcmp(argv[i], "--pickups")) n_pickups = std::atoi(next());
         else if (!std::strcmp(argv[i], "--aoi-scan")) aoi_scan = true;
+        else if (!std::strcmp(argv[i], "--terrain")) terrain_seed = std::uint32_t(std::strtoul(next(), nullptr, 0));
         else if (!std::strcmp(argv[i], "--batch")) batch_size = std::atoi(next());
         else if (!std::strcmp(argv[i], "--rx-threads")) rx_threads = std::atoi(next());
         else if (!std::strcmp(argv[i], "--quiet"))   quiet = true;
@@ -493,8 +499,25 @@ int main(int argc, char** argv) {
     free_slots.reserve(peer_cap);
     for (std::size_t i = peer_cap; i-- > 0;) free_slots.push_back(std::uint32_t(i));
     ge::core::Xoshiro256ss rng{0xA7E9A};
+
+    // Built before the pickups, because where a pickup floats depends on the
+    // ground under it. Amplitude is derived from the world size rather than
+    // configured, so the single seed in ServerWelcome is everything a client
+    // needs to reproduce this exact landscape.
+    world::Terrain terrain;
+    if (terrain_seed != 0) {
+        terrain.configure(world_size, terrain_seed,
+                          world_size * world::kTerrainAmpPerUnit);
+        if (!quiet) {
+            std::printf("terrain seed %u  lattice %dx%d  peak %.1f  %zu KB\n",
+                        terrain_seed, terrain.lattice(), terrain.lattice(),
+                        double(terrain.max_height()), terrain.bytes() / 1024);
+        }
+    }
+
     world::PickupField pickups;
-    pickups.init(std::uint16_t(n_pickups), world_size, rng);
+    const world::Terrain* terra = terrain.enabled() ? &terrain : nullptr;
+    pickups.init(std::uint16_t(n_pickups), world_size, rng, terra);
 
     // AOI index. The delta builder used to test every player against every
     // other -- 4.2M distance tests a tick at 2048 players, ~13% of the process.
@@ -578,7 +601,8 @@ int main(int argc, char** argv) {
                                 const Peer& ex = peers[pi];
                                 const proto::ServerWelcome rw{ge::core::mix64(ex.session),
                                                               ex.session, world_size, aoi, 0, 1,
-                                                              std::uint16_t(tick_hz), 0, 0};
+                                                              std::uint16_t(tick_hz), 0,
+                                                              terrain_seed};
                                 const std::size_t rlen =
                                     proto::encode(sbuf, rw, ex.session, 0,
                                                   std::uint8_t(proto::FrameFlags::ServerSent));
@@ -678,6 +702,7 @@ int main(int argc, char** argv) {
                         const float sz = margin + float(rng.next_double()) * span;
                         const auto idx = arena.add(next_id++, sx, sz,
                                                    world::ClientLink{session, slot, 0, 0});
+                        if (terra) arena.lift_to_ground(idx, *terra);
                         peers[slot] = Peer{from, session, now, idx, 0, false, true,
                                            q->owner[j]};
                         peer_table.insert(from, slot);
@@ -685,7 +710,7 @@ int main(int argc, char** argv) {
 
                         const proto::ServerWelcome w{ge::core::mix64(session), session,
                                                      world_size, aoi, 0, 1,
-                                                     std::uint16_t(tick_hz), 0, 0};
+                                                     std::uint16_t(tick_hz), 0, terrain_seed};
                         alignas(8) std::byte wbuf[proto::kMaxFrameBytes];
                         const std::size_t len = proto::encode(wbuf, w, session, 0,
                                             std::uint8_t(proto::FrameFlags::ServerSent));
@@ -704,8 +729,9 @@ int main(int argc, char** argv) {
                         const float margin = 4.0f, span = world_size - 2.0f * margin;
                         arena.spawn(i, margin + float(rng.next_double()) * span,
                                        margin + float(rng.next_double()) * span);
+                        if (terra) arena.lift_to_ground(i, *terra);
                     }
-                arena.step(dt, world_size);
+                arena.step(dt, world_size, terra);
                 for (std::uint32_t i = 0; i < arena.size(); ++i) {
                     if (!arena.wants_fire(i)) continue;
                     arena.consume_shot(i);
@@ -715,7 +741,7 @@ int main(int argc, char** argv) {
                 }
                 // Powerups after movement, so walking onto one is collected on the
                 // tick you reach it rather than the tick after.
-                pickups.update(tick, world_size, rng);
+                pickups.update(tick, world_size, rng, terra);
                 arena.collect_pickups(pickups, tick, pickup_respawn_ticks);
 
                 if (!aoi_scan) aoi_grid.rebuild(arena.xs(), arena.zs(), arena.size());

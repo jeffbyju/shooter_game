@@ -40,6 +40,14 @@ namespace ge::world {
 // Lattices are 2^k + 1 so every octave's grid lands exactly on lattice points
 // and no octave needs an edge case; 513 caps it at 1 MB of float, generated
 // once at startup and then read-only.
+// Amplitude is derived from the world size rather than configured, so that one
+// seed in ServerWelcome is enough for a client to reproduce the ground exactly.
+// It also forces hills to stay proportionate: a fixed amplitude that reads well
+// on a 2000-unit map makes a 400-unit map a mountain range. 1/64 puts the
+// highest peak at roughly 3% of the map's width, which is cover rather than
+// scenery -- 66 units at world 2000, 6 at world 400.
+inline constexpr float kTerrainAmpPerUnit = 1.0f / 64.0f;
+
 inline constexpr float kTerrainCellTarget = 4.0f;
 inline constexpr int   kTerrainLatticeMin = 33;
 inline constexpr int   kTerrainLatticeMax = 513;

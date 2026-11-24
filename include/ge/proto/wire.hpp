@@ -101,7 +101,17 @@ struct ServerWelcome {
     std::uint16_t shard_count;
     std::uint16_t tick_hz;
     std::uint16_t pad_;
-    std::uint32_t pad2_;
+    // Seed for the terrain generator, or 0 for a flat floor. The terrain
+    // itself is never sent: both sides run the same generator over this seed,
+    // so a whole landscape costs four bytes once per join rather than a bulk
+    // transfer. That is the right trade here because the measured ceiling of
+    // this server is the instance's packet allowance and not its CPU
+    // (results/pps-cap/), so bytes on the wire are the scarce resource.
+    //
+    // It fits in what used to be padding, which keeps ServerWelcome at 32
+    // bytes and means a client built before terrain existed reads 0 and
+    // renders the flat floor it always did.
+    std::uint32_t terrain_seed;
 };
 
 // client_ts_ns is the client's monotonic clock. The server never interprets it,
