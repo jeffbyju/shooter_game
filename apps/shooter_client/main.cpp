@@ -68,6 +68,9 @@ in vec3 v_normal;
 in vec3 v_world;
 uniform vec3 u_colour;
 uniform int  u_grid;      // 1 = draw floor grid lines procedurally
+uniform vec3 u_eye;       // camera position, for distance fog
+uniform vec3 u_horizon;   // what distance fades to: the sky at the horizon
+uniform float u_fog;      // 1/distance scale; 0 disables
 out vec4 o_colour;
 void main() {
     vec3 base = u_colour;
@@ -84,7 +87,16 @@ void main() {
     vec3  n = normalize(v_normal);
     if (!gl_FrontFacing) n = -n;
     float d = max(dot(n, normalize(vec3(0.4, 1.0, 0.3))), 0.0);
-    o_colour = vec4(base * (0.35 + 0.65 * d), 1.0);
+    vec3 lit = base * (0.35 + 0.65 * d);
+
+    // Fade to the horizon colour with distance. Without it the terrain ends at
+    // a hard edge against the sky and the map reads as a tabletop -- and on a
+    // 2000-unit world the far edge is visible from anywhere, so the edge is
+    // what you look at. Exponential-squared, so near geometry is untouched and
+    // only the last stretch fades.
+    float dist = length(v_world - u_eye);
+    float f = 1.0 - exp(-pow(dist * u_fog, 2.0));
+    o_colour = vec4(mix(lit, u_horizon, clamp(f, 0.0, 1.0)), 1.0);
 }
 )";
 
@@ -98,6 +110,35 @@ const char* kLineFragSrc = R"(#version 410 core
 uniform vec4 u_colour;
 out vec4 o_colour;
 void main() { o_colour = u_colour; }
+)";
+
+// Sky. Before this the world sat under a flat #121319 void that filled rather
+// more than half of every frame, which is why the arena read as a diorama on a
+// desk. One fullscreen triangle, no depth, drawn first; the gradient is a
+// function of screen height alone because the camera never rolls, so a true
+// view-direction sky would cost a matrix inverse to look identical.
+const char* kSkyVertSrc = R"(#version 410 core
+out vec2 v_uv;
+void main() {
+    // Fullscreen triangle rather than a quad: one primitive, no diagonal seam,
+    // and no vertex buffer at all -- gl_VertexID indexes a constant.
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    v_uv = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
+}
+)";
+
+const char* kSkyFragSrc = R"(#version 410 core
+in vec2 v_uv;
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+out vec4 o_colour;
+void main() {
+    // Smoothstep rather than linear: a linear ramp over this range shows
+    // Mach banding on a dark gradient, and the band sits right at eye level.
+    float t = smoothstep(0.0, 1.0, clamp(v_uv.y, 0.0, 1.0));
+    o_colour = vec4(mix(u_horizon, u_zenith, t), 1.0);
+}
 )";
 
 const char* kUiVertSrc = R"(#version 410 core
@@ -423,6 +464,16 @@ int main(int argc, char** argv) {
 
     GLuint prog   = link_program(kVertSrc, kFragSrc, "world");
     GLuint ui     = link_program(kUiVertSrc, kUiFragSrc, "ui");
+    GLuint sky    = link_program(kSkyVertSrc, kSkyFragSrc, "sky");
+    const GLint sky_horizon = glGetUniformLocation(sky, "u_horizon");
+    const GLint sky_zenith  = glGetUniformLocation(sky, "u_zenith");
+    // A VAO is required even when the vertex shader reads no attributes:
+    // core profile rejects a draw with VAO 0 bound.
+    GLuint sky_vao = 0; glGenVertexArrays(1, &sky_vao);
+    // Shared by the sky and by the fog the world fades into, so the two can
+    // never drift apart and leave a visible ring at the far plane.
+    const float kHorizon[3] = {0.10f, 0.12f, 0.17f};
+    const float kZenith[3]  = {0.02f, 0.03f, 0.05f};
     GLuint linep  = link_program(kLineVertSrc, kLineFragSrc, "line");
     if (!prog || !ui || !linep) return 1;
 
@@ -432,6 +483,9 @@ int main(int argc, char** argv) {
     const ModelUniforms mu{u_model, u_normal};
     const GLint u_colour   = glGetUniformLocation(prog, "u_colour");
     const GLint u_grid     = glGetUniformLocation(prog, "u_grid");
+    const GLint u_eye      = glGetUniformLocation(prog, "u_eye");
+    const GLint u_horizon  = glGetUniformLocation(prog, "u_horizon");
+    const GLint u_fog      = glGetUniformLocation(prog, "u_fog");
     const GLint ln_viewproj = glGetUniformLocation(linep, "u_viewproj");
     const GLint ln_colour   = glGetUniformLocation(linep, "u_colour");
     const GLint ui_scale   = glGetUniformLocation(ui, "u_scale");
@@ -741,8 +795,19 @@ int main(int argc, char** argv) {
         int fbw = 0, fbh = 0;
         SDL_GetWindowSizeInPixels(win, &fbw, &fbh);
         glViewport(0, 0, fbw, fbh);
-        glClearColor(0.07f, 0.08f, 0.11f, 1.0f);
+        glClearColor(kHorizon[0], kHorizon[1], kHorizon[2], 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Sky first, with depth writes off so it never occludes the world.
+        {
+            glDepthMask(GL_FALSE);
+            glUseProgram(sky);
+            glUniform3fv(sky_horizon, 1, kHorizon);
+            glUniform3fv(sky_zenith, 1, kZenith);
+            glBindVertexArray(sky_vao);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glDepthMask(GL_TRUE);
+        }
 
         const cl::PlayerView* self = nullptr;
         for (const auto& p : view.players)
@@ -763,6 +828,13 @@ int main(int argc, char** argv) {
 
         glUseProgram(prog);
         glUniformMatrix4fv(u_viewproj, 1, GL_FALSE, vp.m);
+        glUniform3f(u_eye, eye_x, eye_y, eye_z);
+        glUniform3fv(u_horizon, 1, kHorizon);
+        // Scaled to the map: the fade has to begin before the far edge on a
+        // 2000-unit world and must not touch anything on a 100-unit one. 2.2
+        // world-widths of visibility puts the knee past the arena on a small
+        // map and well inside it on a large one.
+        glUniform1f(u_fog, 1.0f / (view.world_size * 2.2f));
 
         // Terrain arrives as a seed in the welcome, so the mesh cannot be built
         // before the first frame. Built once, here, when the seed shows up.
@@ -779,7 +851,7 @@ int main(int argc, char** argv) {
         // floor
         {
             const float s = view.world_size;
-            glUniform3f(u_colour, 0.16f, 0.18f, 0.22f);
+            glUniform3f(u_colour, 0.20f, 0.23f, 0.27f);
             glUniform1i(u_grid, 1);
             if (terrain_mesh.vao != 0) {
                 // Already in world space, so the model matrix is identity --
@@ -1221,14 +1293,45 @@ int main(int argc, char** argv) {
             // glReadPixels returns rows bottom-up, so the first half of the
             // buffer is the LOWER half of the screen. Looking level from eye
             // height, the floor must dominate there.
+            // This used to count pixels that differed from the clear colour and
+            // require more of them below the horizon than above. Adding a sky
+            // gradient made every pixel differ from the clear colour, so the
+            // count saturated at 100% in both halves and the check silently
+            // stopped testing anything -- it reported failure, but it would
+            // equally have reported failure on a correct frame.
+            //
+            // The property it wants is unchanged: looking level from eye
+            // height, the ground is below the horizon. Stated as brightness,
+            // that survives a sky. Lit ground is 0.35-1.0 of a mid grey; the
+            // sky darkens upward to near black at the zenith.
+            // This used to count pixels differing from the clear colour and
+            // require more below the horizon than above. Adding a sky gradient
+            // made every pixel differ from the clear colour, so both halves
+            // saturated at 100% and the check stopped testing anything.
+            //
+            // Colour cannot replace it either: whether ground is brighter than
+            // sky depends on the palette, and a hill close to the camera
+            // legitimately fills the upper frame with ground.
+            //
+            // Depth is exact. Sky is drawn at the far plane and writes no
+            // depth, so a sky pixel reads 1.0 and a geometry pixel does not.
+            // Looking level from eye height, the ground must cover more of the
+            // lower half than of the upper -- true whatever colour anything is.
+            std::vector<float> depth(std::size_t(sw) * std::size_t(sh));
+            glReadPixels((fbw - sw) / 2, (fbh - sh) / 2, sw, sh,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, depth.data());
             std::size_t lower = 0, upper = 0;
-            const std::size_t half = pixels.size() / 2;
+            const std::size_t dhalf = depth.size() / 2;
+            for (std::size_t k = 0; k < depth.size(); ++k) {
+                if (depth[k] >= 0.9999f) continue;      // sky
+                if (k < dhalf) ++lower; else ++upper;
+            }
+            // Luminance range, to catch a frame that is only a gradient.
+            int lum_min = 255, lum_max = 0;
             for (std::size_t k = 0; k < pixels.size(); k += 4) {
-                const int r = pixels[k], g = pixels[k + 1], b = pixels[k + 2];
-                const bool lit = std::abs(r - 18) > 6 || std::abs(g - 20) > 6 ||
-                                 std::abs(b - 28) > 6;
-                if (!lit) continue;
-                if (k < half) ++lower; else ++upper;
+                const int lum = (pixels[k] * 2 + pixels[k + 1] * 5 + pixels[k + 2]) / 8;
+                lum_min = std::min(lum_min, lum);
+                lum_max = std::max(lum_max, lum);
             }
             if (flash_test) {
                 const int fw = 200, fh = 40;
@@ -1262,10 +1365,11 @@ int main(int argc, char** argv) {
                         view.pickups.size(),
                         static_cast<unsigned long long>(pickups_taken),
                         self ? self->fuel : 0, self ? self->ammo : 0);
-            if (frac < 0.10) {
-                std::fprintf(stderr, "selftest FAILED: framebuffer is essentially empty\n");
-                return 1;
-            }
+            // `frac` counted pixels differing from the old flat clear colour.
+            // With a sky it is always 100% and proves nothing, so the emptiness
+            // check moved to the luminance range below. Kept in the printout
+            // because a sudden drop would still mean something broke.
+            (void)frac;
             if (!self) {
                 std::fprintf(stderr, "selftest FAILED: server never sent our own player\n");
                 return 1;
@@ -1290,8 +1394,17 @@ int main(int argc, char** argv) {
             }
             if (lower <= upper) {
                 std::fprintf(stderr,
-                    "selftest FAILED: floor is not below the horizon (lower %zu <= upper %zu) "
-                    "-- the view matrix is inverted\n", lower, upper);
+                    "selftest FAILED: ground does not cover more of the lower half than the "
+                    "upper (lower %zu <= upper %zu) -- the view matrix is inverted\n",
+                    lower, upper);
+                return 1;
+            }
+            // And the frame must contain geometry, not just a gradient. A sky
+            // alone spans a narrow luminance range; ground and players widen it.
+            if (lum_max - lum_min < 24) {
+                std::fprintf(stderr,
+                    "selftest FAILED: luminance range %d is too flat -- nothing but sky "
+                    "was drawn\n", lum_max - lum_min);
                 return 1;
             }
             std::printf("selftest PASSED\n");
